@@ -1,0 +1,6 @@
+{
+  "name": "GM Management - Property Rental & Booking Platform",
+  "description": "Airbnb-style property rental platform for GM Management featuring dynamic listing creation, real-time availability calendar, WhatsApp direct booking, Google Calendar sync, automated email confirmations, and admin management.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
