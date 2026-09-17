@@ -1,28 +1,71 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import {
   getFirestore,
   collection,
   doc,
   getDocs,
+  getDoc,
   setDoc,
   deleteDoc,
   Firestore
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  FirebaseStorage
+} from 'firebase/storage';
 import fs from 'fs';
 import path from 'path';
 
-// Fallback configuration ensuring zero downtime across builds
+// Definitive Firebase configuration
 const DEFAULT_FIREBASE_CONFIG = {
-  projectId: 'fresh-shore-5q6d2',
-  appId: '1:31520475548:web:76ee886169704893ebe059',
   apiKey: 'AIzaSyCFKspoQvBoURlsp-WVywql8RooLd0-lR0',
   authDomain: 'fresh-shore-5q6d2.firebaseapp.com',
-  firestoreDatabaseId: 'ai-studio-gmmanagementprop-36c98631-02a4-4db3-95b1-4b26c5d7f464',
+  projectId: 'fresh-shore-5q6d2',
   storageBucket: 'fresh-shore-5q6d2.firebasestorage.app',
-  messagingSenderId: '31520475548'
+  messagingSenderId: '31520475548',
+  appId: '1:31520475548:web:76ee886169704893ebe059',
+  firestoreDatabaseId: 'ai-studio-gmmanagementprop-36c98631-02a4-4db3-95b1-4b26c5d7f464'
 };
 
 let firestoreDb: Firestore | null = null;
+let firebaseApp: FirebaseApp | null = null;
+let storageInstance: FirebaseStorage | null = null;
+
+function loadFirebaseConfig(): any {
+  let config: any = DEFAULT_FIREBASE_CONFIG;
+  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(configPath)) {
+    try {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      config = { ...DEFAULT_FIREBASE_CONFIG, ...JSON.parse(raw) };
+    } catch {
+      // Fallback to DEFAULT_FIREBASE_CONFIG
+    }
+  }
+  return config;
+}
+
+function getFirebaseApp(): FirebaseApp {
+  if (firebaseApp) return firebaseApp;
+  const config = loadFirebaseConfig();
+  firebaseApp = getApps().length === 0 ? initializeApp(config) : getApp();
+  return firebaseApp;
+}
+
+export function logOperation(
+  type: 'READ' | 'WRITE' | 'DELETE',
+  collectionName: string,
+  docId: string,
+  count: number,
+  caller: string
+) {
+  console.log(
+    `[Firestore ${type}] Collection: "${collectionName}" | Target: "${docId}" | Count: ${count} | Reason: [${caller}]`
+  );
+}
 
 function sanitizeForFirestore(obj: any): any {
   if (obj === null || obj === undefined) return null;
@@ -51,21 +94,14 @@ export function getFirestoreInstance(): Firestore | null {
   if (firestoreDb) return firestoreDb;
 
   try {
-    let config = DEFAULT_FIREBASE_CONFIG;
-    const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-    if (fs.existsSync(configPath)) {
-      try {
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        config = { ...DEFAULT_FIREBASE_CONFIG, ...JSON.parse(raw) };
-      } catch {
-        // Fallback to DEFAULT_FIREBASE_CONFIG
-      }
+    const config = loadFirebaseConfig();
+    const app = getFirebaseApp();
+    if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
+      firestoreDb = getFirestore(app, config.firestoreDatabaseId);
+    } else {
+      firestoreDb = getFirestore(app);
     }
-
-    const app = getApps().length === 0 ? initializeApp(config) : getApp();
-    const databaseId = config.firestoreDatabaseId || 'ai-studio-gmmanagementprop-36c98631-02a4-4db3-95b1-4b26c5d7f464';
-    firestoreDb = getFirestore(app, databaseId);
-    console.log(`[Firestore] Initialized Google Cloud Firestore: ${databaseId}`);
+    console.log(`[Firestore] Initialized Google Cloud Firestore: ${config.projectId}`);
     return firestoreDb;
   } catch (err) {
     console.error('[Firestore] Failed to initialize Firebase Firestore:', err);
@@ -73,47 +109,74 @@ export function getFirestoreInstance(): Firestore | null {
   }
 }
 
-// 1. Properties
+// ------------------- Firebase Storage (for image uploads) -------------------
+
+function getStorageInstance(): FirebaseStorage | null {
+  if (storageInstance) return storageInstance;
+  try {
+    const app = getFirebaseApp();
+    storageInstance = getStorage(app);
+    return storageInstance;
+  } catch (err) {
+    console.error('[Storage] Failed to initialize Firebase Storage:', err);
+    return null;
+  }
+}
+
+/**
+ * Uploads a base64 data-URI image to Firebase Storage and returns its public
+ * download URL. Unlike writing to local disk, this survives server restarts,
+ * redeploys, and moving hosts entirely - since the file lives in the Firebase
+ * project's Cloud Storage bucket, not on whatever machine the server runs on.
+ */
+export async function uploadImageToStorage(dataUri: string, folder = 'uploads'): Promise<string | null> {
+  if (!dataUri || typeof dataUri !== 'string') return null;
+  const matches = dataUri.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
+  if (!matches) return null;
+
+  const storage = getStorageInstance();
+  if (!storage) return null;
+
+  try {
+    const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+    const buffer = Buffer.from(matches[2], 'base64');
+    const fileName = `${folder}/img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+    const storageRef = ref(storage, fileName);
+
+    await withTimeout(
+      uploadBytes(storageRef, buffer, { contentType: `image/${matches[1]}` }),
+      15000
+    );
+    const url = await withTimeout(getDownloadURL(storageRef), 8000);
+    logOperation('WRITE', 'storage', fileName, 1, 'image_upload');
+    return url;
+  } catch (err) {
+    console.error('[Storage] Error uploading image to Firebase Storage:', err);
+    return null;
+  }
+}
+
+// 1. Properties - Single document query with clean URL arrays (zero N+1 subcollection reads)
 export async function fetchPropertiesFromFirestore(): Promise<any[]> {
   const db = getFirestoreInstance();
   if (!db) return [];
   try {
-    const snap = await withTimeout(getDocs(collection(db, 'properties')), 3000);
-    if (snap.empty) return [];
+    const snap = await withTimeout(getDocs(collection(db, 'properties')), 4000);
+    if (snap.empty) {
+      logOperation('READ', 'properties', 'all', 0, 'startup_sync');
+      return [];
+    }
 
-    const list = await Promise.all(
-      snap.docs.map(async (d) => {
-        const data = d.data();
-        const propItem: Record<string, any> = { id: d.id, ...data };
+    const list = snap.docs.map((d) => {
+      const data = d.data();
+      return { id: d.id, ...data };
+    });
 
-        // Fetch photos from subcollection only if images array is empty
-        if (!propItem.images || propItem.images.length === 0) {
-          try {
-            const photoSnap = await withTimeout(getDocs(collection(db, 'properties', d.id, 'photos')), 1500);
-            if (!photoSnap.empty) {
-              const photos: Array<{ index: number; url: string }> = [];
-              photoSnap.forEach((pDoc) => {
-                const pData = pDoc.data();
-                if (pData && pData.url) {
-                  photos.push({ index: pData.index ?? 0, url: pData.url });
-                }
-              });
-              photos.sort((a, b) => a.index - b.index);
-              if (photos.length > 0) {
-                propItem.images = photos.map((p) => p.url);
-              }
-            }
-          } catch {}
-        }
-
-        return propItem;
-      })
-    );
-
+    logOperation('READ', 'properties', 'all', list.length, 'startup_sync');
     return list;
   } catch (err: any) {
     if (err?.code === 'resource-exhausted') {
-      console.warn('[Firestore] Free daily read quota limit reached for today. Retaining cached properties.');
+      console.warn('[Firestore] Free daily read quota limit reached for today. Retaining local memory cache.');
     } else {
       console.error('[Firestore] Error fetching properties:', err);
     }
@@ -121,72 +184,27 @@ export async function fetchPropertiesFromFirestore(): Promise<any[]> {
   }
 }
 
-export async function persistPropertyToFirestore(property: any): Promise<void> {
+export async function persistPropertyToFirestore(property: any, caller = 'property_save'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !property || !property.id) return;
   try {
-    const allImages: string[] = Array.isArray(property.images) ? property.images : [];
-    
-    // Store lightweight property document without massive base64 payload to prevent 1MB limit crash
-    const mainDocData = {
+    const cleanDoc = sanitizeForFirestore({
       ...property,
-      imagesCount: allImages.length,
-      // Keep only first photo as quick thumbnail in main doc if needed, or leave empty
-      coverImage: allImages[0] || '',
-      images: allImages.length <= 1 ? allImages : [allImages[0]],
-    };
-    
-    const cleanDoc = sanitizeForFirestore(mainDocData);
-    await withTimeout(setDoc(doc(db, 'properties', property.id), cleanDoc));
-
-    // Save individual photos in subcollection in parallel
-    if (allImages.length > 0) {
-      await withTimeout(
-        Promise.all(
-          allImages.map((imgUrl, i) =>
-            setDoc(doc(db, 'properties', property.id, 'photos', `p_${i}`), {
-              index: i,
-              url: imgUrl,
-              updatedAt: new Date().toISOString(),
-            })
-          )
-        ),
-        5000
-      );
-
-      // If previous photos existed beyond the new length, remove excess asynchronously
-      withTimeout(getDocs(collection(db, 'properties', property.id, 'photos')), 3000)
-        .then((existingPhotosSnap) => {
-          existingPhotosSnap.docs.forEach((pDoc) => {
-            const idx = parseInt(pDoc.id.replace('p_', ''), 10);
-            if (!isNaN(idx) && idx >= allImages.length) {
-              deleteDoc(doc(db, 'properties', property.id, 'photos', pDoc.id)).catch(() => {});
-            }
-          });
-        })
-        .catch(() => {});
-    }
-
-    console.log(`[Firestore] Successfully persisted property & ${allImages.length} photos to Cloud Firestore: ${property.title || property.id}`);
+      updatedAt: new Date().toISOString()
+    });
+    await withTimeout(setDoc(doc(db, 'properties', property.id), cleanDoc), 5000);
+    logOperation('WRITE', 'properties', property.id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error saving property ${property.id}:`, err);
   }
 }
 
-export async function removePropertyFromFirestore(id: string): Promise<void> {
+export async function removePropertyFromFirestore(id: string, caller = 'property_delete'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !id) return;
   try {
-    // Delete subcollection photos
-    try {
-      const photosSnap = await getDocs(collection(db, 'properties', id, 'photos'));
-      for (const pDoc of photosSnap.docs) {
-        await deleteDoc(doc(db, 'properties', id, 'photos', pDoc.id));
-      }
-    } catch {}
-
     await deleteDoc(doc(db, 'properties', id));
-    console.log(`[Firestore] Successfully removed property from Cloud Firestore: ${id}`);
+    logOperation('DELETE', 'properties', id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error removing property ${id}:`, err);
   }
@@ -197,34 +215,41 @@ export async function fetchBlockedSlotsFromFirestore(): Promise<any[]> {
   const db = getFirestoreInstance();
   if (!db) return [];
   try {
-    const snap = await getDocs(collection(db, 'blockedSlots'));
+    const snap = await withTimeout(getDocs(collection(db, 'blockedSlots')), 4000);
     const list: any[] = [];
     snap.forEach((d) => {
       list.push({ id: d.id, ...d.data() });
     });
+    logOperation('READ', 'blockedSlots', 'all', list.length, 'startup_sync');
     return list;
-  } catch (err) {
-    console.error('[Firestore] Error fetching blocked slots:', err);
+  } catch (err: any) {
+    if (err?.code === 'resource-exhausted') {
+      console.warn('[Firestore] Quota limit reached when fetching blocked slots.');
+    } else {
+      console.error('[Firestore] Error fetching blocked slots:', err);
+    }
     return [];
   }
 }
 
-export async function persistBlockedSlotToFirestore(slot: any): Promise<void> {
+export async function persistBlockedSlotToFirestore(slot: any, caller = 'block_slot_save'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !slot || !slot.id) return;
   try {
     const cleanDoc = sanitizeForFirestore(slot);
-    await setDoc(doc(db, 'blockedSlots', slot.id), cleanDoc);
+    await withTimeout(setDoc(doc(db, 'blockedSlots', slot.id), cleanDoc), 5000);
+    logOperation('WRITE', 'blockedSlots', slot.id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error saving blocked slot ${slot.id}:`, err);
   }
 }
 
-export async function removeBlockedSlotFromFirestore(id: string): Promise<void> {
+export async function removeBlockedSlotFromFirestore(id: string, caller = 'unblock_slot_delete'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !id) return;
   try {
-    await deleteDoc(doc(db, 'blockedSlots', id));
+    await withTimeout(deleteDoc(doc(db, 'blockedSlots', id)), 5000);
+    logOperation('DELETE', 'blockedSlots', id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error removing blocked slot ${id}:`, err);
   }
@@ -235,62 +260,75 @@ export async function fetchReservationsFromFirestore(): Promise<any[]> {
   const db = getFirestoreInstance();
   if (!db) return [];
   try {
-    const snap = await getDocs(collection(db, 'reservations'));
+    const snap = await withTimeout(getDocs(collection(db, 'reservations')), 4000);
     const list: any[] = [];
     snap.forEach((d) => {
       list.push({ id: d.id, ...d.data() });
     });
+    logOperation('READ', 'reservations', 'all', list.length, 'startup_sync');
     return list;
-  } catch (err) {
-    console.error('[Firestore] Error fetching reservations:', err);
+  } catch (err: any) {
+    if (err?.code === 'resource-exhausted') {
+      console.warn('[Firestore] Quota limit reached when fetching reservations.');
+    } else {
+      console.error('[Firestore] Error fetching reservations:', err);
+    }
     return [];
   }
 }
 
-export async function persistReservationToFirestore(res: any): Promise<void> {
+export async function persistReservationToFirestore(res: any, caller = 'reservation_save'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !res || !res.id) return;
   try {
     const cleanDoc = sanitizeForFirestore(res);
-    await setDoc(doc(db, 'reservations', res.id), cleanDoc);
+    await withTimeout(setDoc(doc(db, 'reservations', res.id), cleanDoc), 5000);
+    logOperation('WRITE', 'reservations', res.id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error saving reservation ${res.id}:`, err);
   }
 }
 
-export async function removeReservationFromFirestore(id: string): Promise<void> {
+export async function removeReservationFromFirestore(id: string, caller = 'reservation_delete'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !id) return;
   try {
-    await deleteDoc(doc(db, 'reservations', id));
+    await withTimeout(deleteDoc(doc(db, 'reservations', id)), 5000);
+    logOperation('DELETE', 'reservations', id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error removing reservation ${id}:`, err);
   }
 }
 
-// 4. Settings
+// 4. Settings - Targeted single document read (doc: settings/config) instead of full collection query
 export async function fetchSettingsFromFirestore(): Promise<any | null> {
   const db = getFirestoreInstance();
   if (!db) return null;
   try {
-    const snap = await getDocs(collection(db, 'settings'));
-    let settings = null;
-    snap.forEach((d) => {
-      if (d.id === 'config') settings = d.data();
-    });
-    return settings;
-  } catch (err) {
-    console.error('[Firestore] Error fetching settings:', err);
+    const snap = await withTimeout(getDoc(doc(db, 'settings', 'config')), 3000);
+    if (snap.exists()) {
+      logOperation('READ', 'settings', 'config', 1, 'startup_sync');
+      return snap.data();
+    }
+    logOperation('READ', 'settings', 'config', 0, 'startup_sync');
+    return null;
+  } catch (err: any) {
+    if (err?.code === 'resource-exhausted') {
+      console.warn('[Firestore] Quota limit reached when fetching settings.');
+    } else {
+      console.error('[Firestore] Error fetching settings:', err);
+    }
     return null;
   }
 }
 
-export async function persistSettingsToFirestore(settings: any): Promise<void> {
+export async function persistSettingsToFirestore(settings: any, caller = 'settings_save'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db) return;
   try {
     const cleanDoc = sanitizeForFirestore(settings);
-    await setDoc(doc(db, 'settings', 'config'), cleanDoc);
+    await withTimeout(setDoc(doc(db, 'settings', 'config'), cleanDoc), 5000);
+    logOperation('WRITE', 'settings', 'config', 1, caller);
   } catch (err) {
     console.error('[Firestore] Error saving settings to Firestore:', err);
   }
@@ -301,25 +339,74 @@ export async function fetchNotificationsFromFirestore(): Promise<any[]> {
   const db = getFirestoreInstance();
   if (!db) return [];
   try {
-    const snap = await getDocs(collection(db, 'notifications'));
+    const snap = await withTimeout(getDocs(collection(db, 'notifications')), 4000);
     const list: any[] = [];
     snap.forEach((d) => {
       list.push({ id: d.id, ...d.data() });
     });
+    logOperation('READ', 'notifications', 'all', list.length, 'startup_sync');
     return list;
-  } catch (err) {
-    console.error('[Firestore] Error fetching notifications:', err);
+  } catch (err: any) {
+    if (err?.code === 'resource-exhausted') {
+      console.warn('[Firestore] Quota limit reached when fetching notifications.');
+    } else {
+      console.error('[Firestore] Error fetching notifications:', err);
+    }
     return [];
   }
 }
 
-export async function persistNotificationToFirestore(notif: any): Promise<void> {
+export async function persistNotificationToFirestore(notif: any, caller = 'notification_save'): Promise<void> {
   const db = getFirestoreInstance();
   if (!db || !notif || !notif.id) return;
   try {
     const cleanDoc = sanitizeForFirestore(notif);
-    await setDoc(doc(db, 'notifications', notif.id), cleanDoc);
+    await withTimeout(setDoc(doc(db, 'notifications', notif.id), cleanDoc), 5000);
+    logOperation('WRITE', 'notifications', notif.id, 1, caller);
   } catch (err) {
     console.error(`[Firestore] Error saving notification ${notif.id}:`, err);
   }
 }
+
+// 6. Folders & Groupings
+export async function fetchFoldersFromFirestore(): Promise<any[]> {
+  const db = getFirestoreInstance();
+  if (!db) return [];
+  try {
+    const snap = await withTimeout(getDocs(collection(db, 'folders')), 4000);
+    const list: any[] = [];
+    snap.forEach((d) => {
+      list.push({ id: d.id, ...d.data() });
+    });
+    logOperation('READ', 'folders', 'all', list.length, 'startup_sync');
+    return list;
+  } catch (err: any) {
+    console.error('[Firestore] Error fetching folders:', err);
+    return [];
+  }
+}
+
+export async function persistFolderToFirestore(folder: any, caller = 'folder_save'): Promise<void> {
+  const db = getFirestoreInstance();
+  if (!db || !folder || !folder.id) return;
+  try {
+    const cleanDoc = sanitizeForFirestore(folder);
+    await withTimeout(setDoc(doc(db, 'folders', folder.id), cleanDoc), 5000);
+    logOperation('WRITE', 'folders', folder.id, 1, caller);
+  } catch (err) {
+    console.error(`[Firestore] Error saving folder ${folder.id}:`, err);
+  }
+}
+
+export async function removeFolderFromFirestore(id: string, caller = 'folder_delete'): Promise<void> {
+  const db = getFirestoreInstance();
+  if (!db || !id) return;
+  try {
+    await withTimeout(deleteDoc(doc(db, 'folders', id)), 5000);
+    logOperation('DELETE', 'folders', id, 1, caller);
+  } catch (err) {
+    console.error(`[Firestore] Error removing folder ${id}:`, err);
+  }
+}
+
+
