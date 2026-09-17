@@ -469,46 +469,32 @@ export const api = {
     return updated;
   },
 
-  // 7. Admin Authentication (Offline & Quota-Safe)
+// 7. Admin Authentication (Emergency Offline Bypass)
   async adminLogin(credentials: { email?: string; username?: string; password: string }): Promise<{
     success: boolean;
     token: string;
     user: { email: string; role: string; name: string };
   }> {
-    const cleanIdentity = (credentials.email || credentials.username || '').trim().toLowerCase();
-    const cleanPassword = credentials.password.trim();
+    const enteredIdentity = (credentials.email || credentials.username || 'admin@gmmanagement.com').trim();
 
-    // 1. Check if settings are saved in local cache (avoids Firestore reads entirely)
+    // Bypass network & Firebase completely during quota lock
+    const mockUser = {
+      email: enteredIdentity.includes('@') ? enteredIdentity : 'admin@gmmanagement.com',
+      role: 'Super Admin',
+      name: 'GM Management Admin',
+    };
+
+    // Save directly to localStorage to ensure session persistence across reloads
     try {
-      const cachedSettings = localStorage.getItem(CACHE_KEYS.SETTINGS);
-      if (cachedSettings) {
-        const settings = JSON.parse(cachedSettings);
-        // If you store an admin email/password in settings, validate against it here if available
-      }
+      localStorage.setItem('gm_admin_auth', 'true');
+      localStorage.setItem('gm_admin_user', JSON.stringify(mockUser));
     } catch (e) {
-      console.warn('Local cache check failed:', e);
+      console.warn('Failed to save admin session locally:', e);
     }
 
-    // 2. Fallback offline master admin credentials for quota-lockout situations
-    // (You can change these values to whatever email/password you prefer)
-    const allowedEmail = 'admin@gmmanagement.com';
-    const allowedUsername = 'admin';
-    const emergencyPassword = 'admin123'; // Change this to your preferred fallback password
-
-    const isMatchIdentity = cleanIdentity === allowedEmail || cleanIdentity === allowedUsername;
-    const isMatchPassword = cleanPassword === emergencyPassword;
-
-    if (isMatchIdentity && isMatchPassword) {
-      return {
-        success: true,
-        token: `offline-token-${Date.now()}`,
-        user: {
-          email: allowedEmail,
-          role: 'Super Admin',
-          name: 'GM Management Admin',
-        },
-      };
-    }
-
-    throw new Error('Firestore quota is reached and offline credentials did not match. Please verify your password.');
+    return {
+      success: true,
+      token: `bypass-token-${Date.now()}`,
+      user: mockUser,
+    };
   },
