@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import logoImg from '../assets/logo.png';
 import { formatGoogleDriveUrls } from '../utils/googleDrive';
 
 interface LogoProps {
