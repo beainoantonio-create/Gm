@@ -33,7 +33,9 @@ export const api = {
         if (Array.isArray(data) && data.length > 0) {
           try {
             localStorage.setItem(CACHE_KEYS.PROPERTIES, JSON.stringify(data));
-          } catch {}
+          } catch (cacheErr) {
+            console.warn('Failed to update local property cache:', cacheErr);
+          }
           return data;
         }
       }
@@ -62,7 +64,9 @@ export const api = {
                     item.images = photos.map((p) => p.url);
                   }
                 }
-              } catch {}
+              } catch (photoErr) {
+                console.warn(`Failed to fetch photos subcollection for property ${d.id}:`, photoErr);
+              }
             }
             return item as Property;
           })
@@ -71,7 +75,9 @@ export const api = {
         if (cloudProps.length > 0) {
           try {
             localStorage.setItem(CACHE_KEYS.PROPERTIES, JSON.stringify(cloudProps));
-          } catch {}
+          } catch (cacheErr) {
+            console.warn('Failed to cache cloud properties locally:', cacheErr);
+          }
           return cloudProps;
         }
       }
@@ -92,7 +98,9 @@ export const api = {
           return parsed;
         }
       }
-    } catch {}
+    } catch (cacheReadErr) {
+      console.warn('Failed to read property cache:', cacheReadErr);
+    }
 
     return [];
   },
@@ -162,9 +170,11 @@ export const api = {
       const currentList: Property[] = cached ? JSON.parse(cached) : [];
       const updatedList = [created, ...currentList.filter(p => p.id !== created!.id)];
       localStorage.setItem(CACHE_KEYS.PROPERTIES, JSON.stringify(updatedList));
-    } catch {}
+    } catch (cacheErr) {
+      console.warn('Failed to update local cache during create:', cacheErr);
+    }
 
-    // Direct Dual-Write to Firestore for guaranteed cloud persistence in background
+    // Direct Dual-Write to Firestore with proper error tracking
     try {
       const allImgs: string[] = Array.isArray(created.images) ? created.images : [];
       const cleanMain = {
@@ -173,11 +183,11 @@ export const api = {
         coverImage: allImgs[0] || '',
         images: allImgs.length <= 1 ? allImgs : [allImgs[0]],
       };
-      // Fire-and-forget background sync without blocking client response
-      setDoc(doc(db, 'properties', created.id), cleanMain).catch(() => {});
+      
+      await setDoc(doc(db, 'properties', created.id), cleanMain);
 
       if (allImgs.length > 0) {
-        Promise.all(
+        await Promise.all(
           allImgs.map((imgUrl, i) =>
             setDoc(doc(db, 'properties', created!.id, 'photos', `p_${i}`), {
               index: i,
@@ -185,10 +195,10 @@ export const api = {
               updatedAt: new Date().toISOString(),
             })
           )
-        ).catch(() => {});
+        );
       }
     } catch (err) {
-      console.error('Client Firestore dual-write error:', err);
+      console.error('Client Firestore dual-write error on create:', err);
     }
 
     return created;
@@ -219,9 +229,11 @@ export const api = {
       const currentList: Property[] = cached ? JSON.parse(cached) : [];
       const updatedList = currentList.map(p => (p.id === id ? { ...p, ...updated } : p));
       localStorage.setItem(CACHE_KEYS.PROPERTIES, JSON.stringify(updatedList));
-    } catch {}
+    } catch (cacheErr) {
+      console.warn('Failed to update local cache during update:', cacheErr);
+    }
 
-    // Direct Dual-Write to Firestore
+    // Direct Dual-Write to Firestore with proper error tracking
     try {
       const allImgs: string[] = Array.isArray(updated.images) ? updated.images : [];
       const cleanMain = {
@@ -230,10 +242,11 @@ export const api = {
         coverImage: allImgs[0] || '',
         images: allImgs.length <= 1 ? allImgs : [allImgs[0]],
       };
-      setDoc(doc(db, 'properties', id), cleanMain).catch(() => {});
+      
+      await setDoc(doc(db, 'properties', id), cleanMain);
 
       if (allImgs.length > 0) {
-        Promise.all(
+        await Promise.all(
           allImgs.map((imgUrl, i) =>
             setDoc(doc(db, 'properties', id, 'photos', `p_${i}`), {
               index: i,
@@ -241,7 +254,7 @@ export const api = {
               updatedAt: new Date().toISOString(),
             })
           )
-        ).catch(() => {});
+        );
       }
     } catch (err) {
       console.error('Client Firestore update error:', err);
@@ -287,7 +300,6 @@ export const api = {
     if (!res.ok) throw new Error('Failed to block dates');
     const newSlot: BlockedSlot = await res.json();
 
-    // Dual-write to Firestore
     try {
       await setDoc(doc(db, 'blockedSlots', newSlot.id), newSlot);
     } catch (err) {
@@ -414,7 +426,9 @@ export const api = {
         const data = await res.json();
         try {
           localStorage.setItem(CACHE_KEYS.SETTINGS, JSON.stringify(data));
-        } catch {}
+        } catch (cacheErr) {
+          console.warn('Failed to cache settings locally:', cacheErr);
+        }
         return data;
       }
     } catch {}
@@ -422,7 +436,9 @@ export const api = {
     try {
       const cached = localStorage.getItem(CACHE_KEYS.SETTINGS);
       if (cached) return JSON.parse(cached);
-    } catch {}
+    } catch (cacheReadErr) {
+      console.warn('Failed to read cached settings:', cacheReadErr);
+    }
 
     return {
       companyName: 'GM Management',
