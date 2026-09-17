@@ -17,7 +17,11 @@ import {
   persistSettingsToFirestore,
   fetchNotificationsFromFirestore,
   persistNotificationToFirestore,
-  getFirestoreInstance
+  fetchFoldersFromFirestore,
+  persistFolderToFirestore,
+  removeFolderFromFirestore,
+  getFirestoreInstance,
+  uploadImageToStorage
 } from './src/server/firebase-store';
 
 const app = express();
@@ -29,9 +33,43 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Persistent Data Storage Path
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Serve uploaded images statically
+app.use('/uploads', express.static(UPLOADS_DIR));
+
+// Saves an uploaded image to Firebase Storage (so it survives restarts/redeploys/host
+// moves) and returns its public URL. Falls back to local disk only if Storage is
+// unreachable, so an upload never silently fails - though local files won't persist
+// across restarts on most hosts, so Storage should be the normal path in production.
+async function processImageToUrl(img: string): Promise<string> {
+  if (!img || typeof img !== 'string') return '';
+  if (!img.startsWith('data:image/')) return img;
+
+  const storageUrl = await uploadImageToStorage(img);
+  if (storageUrl) return storageUrl;
+
+  console.warn('[Upload] Firebase Storage upload failed, falling back to local disk (will not persist across restarts).');
+  try {
+    const matches = img.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
+    if (!matches) return img;
+    const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+    const buffer = Buffer.from(matches[2], 'base64');
+    const fileName = `img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+    const filePath = path.join(UPLOADS_DIR, fileName);
+    fs.writeFileSync(filePath, buffer);
+    return `/uploads/${fileName}`;
+  } catch (e) {
+    console.error('Error saving base64 image to disk:', e);
+    return img;
+  }
 }
 
 interface DatabaseSchema {
@@ -39,6 +77,7 @@ interface DatabaseSchema {
   blockedSlots: any[];
   reservations: any[];
   notifications: any[];
+  folders: any[];
   settings: {
     companyName: string;
     whatsappNumber: string;
@@ -69,6 +108,7 @@ const defaultData: DatabaseSchema = {
       read: false
     }
   ],
+  folders: [],
   settings: {
     companyName: 'GM Management',
     whatsappNumber: '+96176141945',
@@ -86,6 +126,8 @@ const defaultData: DatabaseSchema = {
 };
 
 let cachedDb: DatabaseSchema = defaultData;
+let isCloudSynced = false;
+let isSyncing = false;
 
 function readDb(): DatabaseSchema {
   return cachedDb;
@@ -94,13 +136,17 @@ function readDb(): DatabaseSchema {
 function writeDb(data: DatabaseSchema) {
   cachedDb = data;
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    const tmpPath = `${DATA_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, DATA_FILE);
   } catch (err) {
     console.error('Error writing to db.json', err);
   }
 }
 
-async function syncWithFirestore() {
+async function syncWithFirestore(forced = false) {
+  if (isSyncing) return;
+  isSyncing = true;
   try {
     // 1. Initial disk read
     if (fs.existsSync(DATA_FILE)) {
@@ -114,70 +160,93 @@ async function syncWithFirestore() {
 
     const dbInstance = getFirestoreInstance();
     if (!dbInstance) {
-      console.log('[Firestore] Local memory fallback initialized.');
+      console.log('[Firestore] Local memory storage active.');
+      isCloudSynced = true;
+      isSyncing = false;
       return;
     }
 
-    console.log('[Firestore] Fetching persistent data from Google Cloud Firestore...');
-    const [cloudProps, cloudBlocks, cloudReservations, cloudSettings, cloudNotifs] = await Promise.all([
+    console.log('[Firestore] Performing single startup sync from Cloud Firestore...');
+    const [cloudProps, cloudBlocks, cloudReservations, cloudSettings, cloudNotifs, cloudFolders] = await Promise.all([
       fetchPropertiesFromFirestore(),
       fetchBlockedSlotsFromFirestore(),
       fetchReservationsFromFirestore(),
       fetchSettingsFromFirestore(),
-      fetchNotificationsFromFirestore()
+      fetchNotificationsFromFirestore(),
+      fetchFoldersFromFirestore()
     ]);
 
-    if (cloudProps.length > 0) {
-      console.log(`[Firestore] Loaded ${cloudProps.length} properties from Cloud Firestore.`);
+    if (cloudProps) {
+      console.log(`[Firestore] Synchronized ${cloudProps.length} properties from Cloud Firestore.`);
       cachedDb.properties = cloudProps;
-    } else if (cachedDb.properties.length > 0) {
-      console.log(`[Firestore] Seeding ${cachedDb.properties.length} initial properties to Cloud Firestore...`);
-      for (const p of cachedDb.properties) {
-        await persistPropertyToFirestore(p);
-      }
+    } else {
+      cachedDb.properties = [];
     }
 
-    if (cloudBlocks.length > 0) {
-      console.log(`[Firestore] Loaded ${cloudBlocks.length} blocked slots from Cloud Firestore.`);
+    if (cloudBlocks && cloudBlocks.length > 0) {
+      console.log(`[Firestore] Synchronized ${cloudBlocks.length} blocked slots from Cloud Firestore.`);
       cachedDb.blockedSlots = cloudBlocks;
-    } else if (cachedDb.blockedSlots.length > 0) {
-      for (const b of cachedDb.blockedSlots) {
-        await persistBlockedSlotToFirestore(b);
-      }
     }
 
-    if (cloudReservations.length > 0) {
-      console.log(`[Firestore] Loaded ${cloudReservations.length} reservations from Cloud Firestore.`);
+    if (cloudReservations && cloudReservations.length > 0) {
+      console.log(`[Firestore] Synchronized ${cloudReservations.length} reservations from Cloud Firestore.`);
       cachedDb.reservations = cloudReservations;
-    } else if (cachedDb.reservations.length > 0) {
-      for (const r of cachedDb.reservations) {
-        await persistReservationToFirestore(r);
-      }
     }
 
     if (cloudSettings) {
-      console.log('[Firestore] Loaded company settings from Cloud Firestore.');
+      console.log('[Firestore] Synchronized company settings from Cloud Firestore.');
       cachedDb.settings = { ...cachedDb.settings, ...cloudSettings };
-    } else if (cachedDb.settings) {
-      await persistSettingsToFirestore(cachedDb.settings);
     }
 
-    if (cloudNotifs.length > 0) {
+    if (cloudNotifs && cloudNotifs.length > 0) {
       cachedDb.notifications = cloudNotifs;
     }
 
+    if (cloudFolders && cloudFolders.length > 0) {
+      console.log(`[Firestore] Synchronized ${cloudFolders.length} folders from Cloud Firestore.`);
+      cachedDb.folders = cloudFolders;
+    }
+
     writeDb(cachedDb);
-    console.log('[Firestore] Google Cloud Firestore synchronization completed successfully!');
+    isCloudSynced = true;
+    console.log('[Firestore] Initial cloud synchronization finished.');
   } catch (err) {
     console.error('[Firestore] Firestore synchronization error on bootstrap:', err);
+  } finally {
+    isSyncing = false;
   }
 }
 
 // ------------------- API ROUTES -------------------
 
-// 1. Health Check
+// 1. Health & Sync Status
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', isCloudSynced, timestamp: new Date().toISOString() });
+});
+
+// Image Upload API (saves images as clean static URLs to keep Firestore & db.json lightweight)
+app.post('/api/upload', async (req, res) => {
+  try {
+    const { image, images } = req.body;
+    if (Array.isArray(images)) {
+      const urls = await Promise.all(images.map((img) => processImageToUrl(img)));
+      return res.json({ urls });
+    }
+    if (image) {
+      const url = await processImageToUrl(image);
+      return res.json({ url });
+    }
+    return res.status(400).json({ error: 'No image provided' });
+  } catch (err: any) {
+    console.error('[Upload] Error processing upload:', err);
+    return res.status(500).json({ error: err?.message || 'Upload failed' });
+  }
+});
+
+// Admin Manual Firestore Sync Trigger
+app.post('/api/admin/sync-firestore', async (req, res) => {
+  await syncWithFirestore(true);
+  res.json({ success: true, isCloudSynced, propertiesCount: cachedDb.properties.length });
 });
 
 // Admin Authentication Route
@@ -231,22 +300,13 @@ app.post('/api/settings', (req, res) => {
   const db = readDb();
   db.settings = { ...db.settings, ...req.body };
   writeDb(db);
-  persistSettingsToFirestore(db.settings).catch((e) => console.error('[Firestore settings sync error]:', e));
+  persistSettingsToFirestore(db.settings, 'admin_settings_save').catch((e) => console.error('[Firestore settings sync error]:', e));
   res.json(db.settings);
 });
 
-// 3. Properties
-app.get('/api/properties', async (req, res) => {
+// 3. Properties - Direct in-memory fast reads (Zero Firestore reads during page loads)
+app.get('/api/properties', (req, res) => {
   const db = readDb();
-  if (!db.properties || db.properties.length === 0) {
-    try {
-      const cloud = await fetchPropertiesFromFirestore();
-      if (cloud && cloud.length > 0) {
-        db.properties = cloud;
-        writeDb(db);
-      }
-    } catch {}
-  }
   res.json(db.properties || []);
 });
 
@@ -259,8 +319,11 @@ app.get('/api/properties/:id', (req, res) => {
   res.json(property);
 });
 
-app.post('/api/properties', (req, res) => {
+app.post('/api/properties', async (req, res) => {
   const db = readDb();
+  const rawImages: string[] = Array.isArray(req.body.images) ? req.body.images : [];
+  const cleanImages = await Promise.all(rawImages.map((img) => processImageToUrl(img)));
+
   const newProperty = {
     id: `prop-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     title: req.body.title || 'Untitled Property',
@@ -277,7 +340,7 @@ app.post('/api/properties', (req, res) => {
     beds: Number(req.body.beds) || 1,
     bathrooms: Number(req.body.bathrooms) || 1,
     maxGuests: Number(req.body.maxGuests) || 2,
-    images: Array.isArray(req.body.images) ? req.body.images : [],
+    images: cleanImages,
     amenities: Array.isArray(req.body.amenities) ? req.body.amenities : [],
     houseRules: Array.isArray(req.body.houseRules) ? req.body.houseRules : ['No smoking', 'No pets without prior consent', 'Quiet hours after 10 PM'],
     checkInTime: req.body.checkInTime || '15:00',
@@ -292,24 +355,28 @@ app.post('/api/properties', (req, res) => {
 
   db.properties.unshift(newProperty);
   writeDb(db);
-  persistPropertyToFirestore(newProperty).catch((e) => console.error('[Firestore property sync error]:', e));
+  persistPropertyToFirestore(newProperty, 'property_create').catch((e) => console.error('[Firestore property sync error]:', e));
   res.status(201).json(newProperty);
 });
 
-app.put('/api/properties/:id', (req, res) => {
+app.put('/api/properties/:id', async (req, res) => {
   const db = readDb();
   const index = db.properties.findIndex((p) => p.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: 'Property not found' });
   }
 
+  const rawImages: string[] = Array.isArray(req.body.images) ? req.body.images : (db.properties[index].images || []);
+  const cleanImages = await Promise.all(rawImages.map((img) => processImageToUrl(img)));
+
   db.properties[index] = {
     ...db.properties[index],
     ...req.body,
+    images: cleanImages,
     id: req.params.id
   };
   writeDb(db);
-  persistPropertyToFirestore(db.properties[index]).catch((e) => console.error('[Firestore property update sync error]:', e));
+  persistPropertyToFirestore(db.properties[index], 'property_update').catch((e) => console.error('[Firestore property update sync error]:', e));
   res.json(db.properties[index]);
 });
 
@@ -319,7 +386,7 @@ app.delete('/api/properties/:id', (req, res) => {
   db.blockedSlots = db.blockedSlots.filter((b) => b.propertyId !== req.params.id);
   db.reservations = db.reservations.filter((r) => r.propertyId !== req.params.id);
   writeDb(db);
-  removePropertyFromFirestore(req.params.id).catch((e) => console.error('[Firestore remove property error]:', e));
+  removePropertyFromFirestore(req.params.id, 'property_delete').catch((e) => console.error('[Firestore remove property error]:', e));
   res.json({ success: true });
 });
 
@@ -916,12 +983,71 @@ app.post('/api/notifications/send-reminder', (req, res) => {
   res.json({ success: true, reminderSentAt: resv.reminderSentAt });
 });
 
+// 8. Folders & Media Organization
+app.get('/api/folders', (req, res) => {
+  const db = readDb();
+  res.json(db.folders || []);
+});
+
+app.post('/api/folders', async (req, res) => {
+  const db = readDb();
+  const { name, type, description, color, parentId } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'Folder name is required' });
+  }
+
+  const newFolder = {
+    id: `folder-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    name: name.trim(),
+    type: type || 'properties',
+    description: description || '',
+    color: color || '#3b82f6',
+    parentId: parentId || null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  if (!db.folders) db.folders = [];
+  db.folders.push(newFolder);
+  writeDb(db);
+  persistFolderToFirestore(newFolder).catch((e) => console.error('[Firestore folder sync error]:', e));
+
+  res.status(201).json(newFolder);
+});
+
+app.delete('/api/folders/:id', async (req, res) => {
+  const db = readDb();
+  const folderId = req.params.id;
+  if (!db.folders) db.folders = [];
+  db.folders = db.folders.filter((f) => f.id !== folderId);
+  writeDb(db);
+  removeFolderFromFirestore(folderId).catch((e) => console.error('[Firestore folder delete error]:', e));
+
+  res.json({ success: true });
+});
+
+// 9. Manual Cloud Sync & Status
+app.post('/api/admin/sync-firestore', async (req, res) => {
+  try {
+    await syncWithFirestore(true);
+    const db = readDb();
+    res.json({
+      success: true,
+      message: 'Firestore synchronization executed successfully',
+      propertiesCount: db.properties.length,
+      foldersCount: (db.folders || []).length,
+      reservationsCount: db.reservations.length,
+      blockedSlotsCount: db.blockedSlots.length,
+      databaseId: 'fresh-shore-5q6d2'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Sync failed' });
+  }
+});
+
 // ------------------- SERVER START & VITE MIDDLEWARE -------------------
 
 async function startServer() {
-  // Sync all persistent cloud data from Google Cloud Firestore on startup
-  await syncWithFirestore();
-
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -938,6 +1064,10 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`GM Management Server running on http://localhost:${PORT}`);
+    // Sync with Firestore asynchronously in the background without delaying server startup
+    syncWithFirestore().catch((err) => {
+      console.error('[Firestore] Background sync error:', err);
+    });
   });
 }
 
