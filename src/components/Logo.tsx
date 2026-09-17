@@ -35,9 +35,6 @@ export const Logo: React.FC<LogoProps> = ({
     const driveResolved = formatGoogleDriveUrls(customLogo.trim());
     sources.push(...driveResolved);
   }
-  if (logoImg) {
-    sources.push(logoImg);
-  }
   sources.push('/logo.png');
   sources.push('/logo.jpg');
 
@@ -111,4 +108,3 @@ export const Logo: React.FC<LogoProps> = ({
     </div>
   );
 };
-
