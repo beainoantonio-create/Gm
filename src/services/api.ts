@@ -498,3 +498,4 @@ export const api = {
       user: mockUser,
     };
   },
+};
