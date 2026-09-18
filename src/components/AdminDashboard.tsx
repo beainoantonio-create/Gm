@@ -115,20 +115,49 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadAllData = async () => {
     try {
       setLoading(true);
-      const [propsData, resvsData, notifsData, settsData] = await Promise.all([
+      // Using allSettled (not all) so one failing fetch - e.g. a brief network
+      // hiccup on notifications - doesn't wipe out data that loaded fine, like
+      // properties. Each piece is handled independently below.
+      const [propsResult, resvsResult, notifsResult, settsResult] = await Promise.allSettled([
         api.getProperties(),
         api.getReservations(),
         api.getNotifications(),
         api.getSettings(),
       ]);
-      setProperties(propsData);
-      setReservations(resvsData);
-      setNotifications(notifsData);
-      setSettings(settsData);
 
-      if (propsData.length > 0 && !selectedPropertyIdForBlock) {
-        setSelectedPropertyIdForBlock(propsData[0].id);
-        loadPropertyAvailability(propsData[0].id);
+      if (propsResult.status === 'fulfilled') {
+        setProperties(propsResult.value);
+        if (propsResult.value.length > 0 && !selectedPropertyIdForBlock) {
+          setSelectedPropertyIdForBlock(propsResult.value[0].id);
+          loadPropertyAvailability(propsResult.value[0].id);
+        }
+      } else {
+        console.error('Failed to load properties:', propsResult.reason);
+      }
+
+      if (resvsResult.status === 'fulfilled') {
+        setReservations(resvsResult.value);
+      } else {
+        console.error('Failed to load reservations:', resvsResult.reason);
+      }
+
+      if (notifsResult.status === 'fulfilled') {
+        setNotifications(notifsResult.value);
+      } else {
+        console.error('Failed to load notifications:', notifsResult.reason);
+      }
+
+      if (settsResult.status === 'fulfilled') {
+        setSettings(settsResult.value);
+      } else {
+        console.error('Failed to load settings:', settsResult.reason);
+      }
+
+      const failedCount = [propsResult, resvsResult, notifsResult, settsResult].filter(
+        (r) => r.status === 'rejected'
+      ).length;
+      if (failedCount > 0) {
+        showToast(`${failedCount} of 4 dashboard sections failed to load - try the refresh button.`, 'error');
       }
     } catch (err) {
       console.error('Failed to load dashboard data', err);
