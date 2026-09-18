@@ -20,9 +20,10 @@ import {
   fetchFoldersFromFirestore,
   persistFolderToFirestore,
   removeFolderFromFirestore,
-  getFirestoreInstance,
-  uploadImageToStorage
+  getFirestoreInstance
 } from './src/server/firebase-store';
+import { uploadImageToGithub } from './src/server/image-upload';
+import os from 'os';
 
 const app = express();
 const PORT = 3000;
@@ -31,9 +32,14 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Persistent Data Storage Path
-const DATA_DIR = path.join(process.cwd(), 'data');
+// On Vercel, the deployed app's own folder is read-only - only os.tmpdir()
+// (/tmp) is writable, and it's wiped between invocations. That's fine here:
+// this is just a fast local cache, and Firestore is the real source of truth
+// that gets re-synced on every cold start anyway.
+const IS_VERCEL = !!process.env.VERCEL;
+const DATA_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'gm-data') : path.join(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+const UPLOADS_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'gm-uploads') : path.join(process.cwd(), 'uploads');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -45,18 +51,19 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 // Serve uploaded images statically
 app.use('/uploads', express.static(UPLOADS_DIR));
 
-// Saves an uploaded image to Firebase Storage (so it survives restarts/redeploys/host
-// moves) and returns its public URL. Falls back to local disk only if Storage is
-// unreachable, so an upload never silently fails - though local files won't persist
-// across restarts on most hosts, so Storage should be the normal path in production.
+// Saves an uploaded image to GitHub (so it survives restarts/redeploys/host moves)
+// and returns its public URL. Falls back to local disk only if GitHub is
+// unreachable, so an upload never silently fails - though local files won't
+// persist across restarts on most hosts (and not at all between requests on
+// Vercel), so GitHub should be the normal path in production.
 async function processImageToUrl(img: string): Promise<string> {
   if (!img || typeof img !== 'string') return '';
   if (!img.startsWith('data:image/')) return img;
 
-  const storageUrl = await uploadImageToStorage(img);
-  if (storageUrl) return storageUrl;
+  const githubUrl = await uploadImageToGithub(img);
+  if (githubUrl) return githubUrl;
 
-  console.warn('[Upload] Firebase Storage upload failed, falling back to local disk (will not persist across restarts).');
+  console.warn('[Upload] GitHub upload failed, falling back to local disk (will not persist).');
   try {
     const matches = img.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
     if (!matches) return img;
@@ -1071,4 +1078,13 @@ async function startServer() {
   });
 }
 
-startServer();
+// On Vercel, this file is imported by api/index.ts and used as a serverless
+// function - there is no persistent process to "listen" on a port, and static
+// files are served by Vercel's own CDN, not by Express. So we skip all of that
+// and just export the configured `app`. Everywhere else (Render, local dev),
+// we start a normal always-on server exactly as before.
+if (!IS_VERCEL) {
+  startServer();
+}
+
+export default app;
