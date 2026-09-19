@@ -270,11 +270,19 @@ export const api = {
       console.warn(`Server deleteProperty ${id} failed:`, e);
     }
 
-    // Direct Delete in Firestore
+    // Direct Delete in Firestore - this must actually succeed, since it's the
+    // real source of truth the public site reads from. Previously this error
+    // was swallowed and the UI always claimed success even when the property
+    // was never actually removed.
     try {
       await deleteDoc(doc(db, 'properties', id));
-    } catch (err) {
+    } catch (err: any) {
       console.error('Client Firestore delete error:', err);
+      throw new Error(
+        err?.code === 'resource-exhausted'
+          ? 'The daily Firestore limit was reached, so the delete could not go through. Try again tomorrow, or reduce read/write usage.'
+          : 'Could not delete this property from the database. Please try again.'
+      );
     }
 
     return { success: true };
