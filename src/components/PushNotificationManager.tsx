@@ -15,12 +15,22 @@ export const PushNotificationManager: React.FC<PushNotificationManagerProps> = (
   useEffect(() => {
     if ('Notification' in window) {
       setPermission(Notification.permission);
-      if (Notification.permission === 'default') {
+      const dismissed = localStorage.getItem('gm_notif_prompt_dismissed') === 'true';
+      if (Notification.permission === 'default' && !dismissed) {
         const timer = setTimeout(() => setShowPromptBanner(true), 2500);
         return () => clearTimeout(timer);
       }
     }
   }, []);
+
+  const dismissPrompt = () => {
+    setShowPromptBanner(false);
+    try {
+      localStorage.setItem('gm_notif_prompt_dismissed', 'true');
+    } catch {
+      // Not critical if this fails - worst case the prompt reappears next visit
+    }
+  };
 
   const requestPermission = async () => {
     if (!('Notification' in window)) return;
@@ -80,7 +90,7 @@ export const PushNotificationManager: React.FC<PushNotificationManagerProps> = (
               </button>
               <button
                 type="button"
-                onClick={() => setShowPromptBanner(false)}
+                onClick={dismissPrompt}
                 className="py-1.5 px-2.5 rounded-lg text-slate-400 hover:text-white transition"
               >
                 Later
@@ -89,7 +99,7 @@ export const PushNotificationManager: React.FC<PushNotificationManagerProps> = (
           </div>
           <button
             type="button"
-            onClick={() => setShowPromptBanner(false)}
+            onClick={dismissPrompt}
             className="text-slate-400 hover:text-white"
           >
             <X className="w-4 h-4" />
