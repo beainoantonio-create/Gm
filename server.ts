@@ -31,6 +31,21 @@ const PORT = 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// On every host except Vercel, startServer() (further down) runs once at boot
+// and syncs cachedDb from Firestore before any request arrives. Vercel skips
+// startServer() entirely since there's no persistent process to boot - so
+// without this, cachedDb would stay empty forever and every route reading
+// from it (properties, reservations, notifications, settings) would silently
+// return nothing. This runs the same sync on the first request a fresh
+// container receives, then every later request on that same warm container
+// reuses the already-synced data.
+app.use(async (req, res, next) => {
+  if (IS_VERCEL && !isCloudSynced) {
+    await syncWithFirestore(true);
+  }
+  next();
+});
+
 // Persistent Data Storage Path
 // On Vercel, the deployed app's own folder is read-only - only os.tmpdir()
 // (/tmp) is writable, and it's wiped between invocations. That's fine here:
