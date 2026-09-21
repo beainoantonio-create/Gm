@@ -5,6 +5,7 @@ import ical from 'node-ical';
 import { createServer as createViteServer } from 'vite';
 import {
   fetchPropertiesFromFirestore,
+  fetchPropertyPhotosFromFirestore,
   persistPropertyToFirestore,
   removePropertyFromFirestore,
   fetchBlockedSlotsFromFirestore,
@@ -332,13 +333,16 @@ app.get('/api/properties', (req, res) => {
   res.json(db.properties || []);
 });
 
-app.get('/api/properties/:id', (req, res) => {
+app.get('/api/properties/:id', async (req, res) => {
   const db = readDb();
   const property = db.properties.find((p) => p.id === req.params.id);
   if (!property) {
     return res.status(404).json({ error: 'Property not found' });
   }
-  res.json(property);
+  // The bulk list only carries each property's cover photo for speed; fetch
+  // this one property's full gallery here, since only 1 property is involved.
+  const fullPhotos = await fetchPropertyPhotosFromFirestore(property.id);
+  res.json(fullPhotos ? { ...property, images: fullPhotos } : property);
 });
 
 app.post('/api/properties', async (req, res) => {
