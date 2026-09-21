@@ -372,9 +372,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleEditProperty = (prop: Property) => {
+    // Open instantly with the cover-only data already on hand, then fill in
+    // the full photo gallery once it loads, so all existing photos show up
+    // for editing (not just the cover).
     setPropertyForm({ ...prop });
     setEditingPropertyId(prop.id);
     setIsCreatingProperty(true);
+    api.getProperty(prop.id)
+      .then((full) => {
+        setPropertyForm((current) => (current ? { ...current, images: full.images } : current));
+      })
+      .catch((err) => console.warn('Failed to load full property photos:', err));
   };
 
   const handleDeleteProperty = async (id: string) => {
