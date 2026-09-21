@@ -47,32 +47,11 @@ export const api = {
     try {
       const snap = await getDocs(collection(db, 'properties'));
       if (!snap.empty) {
-        const cloudProps = await Promise.all(
-          snap.docs.map(async (d) => {
-            const item: any = { id: d.id, ...(d.data() as any) };
-            // Always check the photos subcollection for the complete gallery -
-            // the main doc's `images` field always has at least 1 cover photo
-            // (by design, to stay under Firestore's 1MB doc limit), so a
-            // "fetch only if empty" check would never actually run.
-            try {
-              const photoSnap = await getDocs(collection(db, 'properties', d.id, 'photos'));
-              if (!photoSnap.empty) {
-                const photos: Array<{ index: number; url: string }> = [];
-                photoSnap.forEach((pDoc) => {
-                  const p = pDoc.data();
-                  if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
-                });
-                photos.sort((a, b) => a.index - b.index);
-                if (photos.length > 0) {
-                  item.images = photos.map((p) => p.url);
-                }
-              }
-            } catch (photoErr) {
-              console.warn(`Failed to fetch photos subcollection for property ${d.id}:`, photoErr);
-            }
-            return item as Property;
-          })
-        );
+        // Deliberately fast: only the cover photo is needed for the list/grid
+        // view. Use getProperty(id) for a single property's full gallery
+        // (e.g. opening its detail page) instead of fetching every
+        // property's photos subcollection here.
+        const cloudProps: Property[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 
         if (cloudProps.length > 0) {
           try {
@@ -114,6 +93,35 @@ export const api = {
     } catch (e) {
       console.warn(`Server fetch /api/properties/${id} failed:`, e);
     }
+
+    // Direct Firestore fallback for a single property - fetches this one
+    // property's full photo gallery, unlike the bulk list (which only carries
+    // each property's cover photo for speed).
+    try {
+      const docSnap = await getDocs(collection(db, 'properties'));
+      const match = docSnap.docs.find((d) => d.id === id);
+      if (match) {
+        const item: any = { id: match.id, ...(match.data() as any) };
+        try {
+          const photoSnap = await getDocs(collection(db, 'properties', id, 'photos'));
+          if (!photoSnap.empty) {
+            const photos: Array<{ index: number; url: string }> = [];
+            photoSnap.forEach((pDoc) => {
+              const p = pDoc.data();
+              if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
+            });
+            photos.sort((a, b) => a.index - b.index);
+            if (photos.length > 0) item.images = photos.map((p) => p.url);
+          }
+        } catch (photoErr) {
+          console.warn(`Failed to fetch photos subcollection for property ${id}:`, photoErr);
+        }
+        return item as Property;
+      }
+    } catch (e) {
+      console.warn(`Direct Firestore fetch for property ${id} failed:`, e);
+    }
+
     const props = await this.getProperties();
     const found = props.find((p) => p.id === id);
     if (!found) throw new Error('Property not found');
