@@ -41,8 +41,14 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // container receives, then every later request on that same warm container
 // reuses the already-synced data.
 app.use(async (req, res, next) => {
-  if (IS_VERCEL && !isCloudSynced) {
-    await syncWithFirestore(true);
+  try {
+    if (IS_VERCEL && !isCloudSynced) {
+      await syncWithFirestore(true);
+    }
+  } catch (err) {
+    // Never let a sync failure take down every route - worst case, routes
+    // just run against whatever's already in cachedDb (possibly empty).
+    console.error('[Sync Middleware] Unexpected error, continuing without sync:', err);
   }
   next();
 });
