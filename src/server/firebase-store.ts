@@ -167,32 +167,13 @@ export async function fetchPropertiesFromFirestore(): Promise<any[]> {
       return [];
     }
 
-    // The main property doc only stores 1 cover photo, to stay under
-    // Firestore's 1MB-per-document limit - the rest of a property's photos
-    // live in a "photos" subcollection and need to be fetched and merged in
-    // separately, or only the cover photo would ever be shown.
-    const list = await Promise.all(
-      snap.docs.map(async (d) => {
-        const data: any = d.data();
-        try {
-          const photoSnap = await getDocs(collection(db, 'properties', d.id, 'photos'));
-          if (!photoSnap.empty) {
-            const photos: Array<{ index: number; url: string }> = [];
-            photoSnap.forEach((pDoc) => {
-              const p: any = pDoc.data();
-              if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
-            });
-            photos.sort((a, b) => a.index - b.index);
-            if (photos.length > 0) {
-              data.images = photos.map((p) => p.url);
-            }
-          }
-        } catch (photoErr) {
-          console.warn(`[Firestore] Failed to fetch photos for property ${d.id}:`, photoErr);
-        }
-        return { id: d.id, ...data };
-      })
-    );
+    // Deliberately fast and cheap: the bulk list (used for the homepage grid)
+    // only needs each property's cover photo, which is already in the main
+    // doc. Fetching every property's full "photos" subcollection here would
+    // mean N extra Firestore reads per property on every list load - use
+    // fetchPropertyPhotosFromFirestore() for a single property's full gallery
+    // instead (e.g. when opening its detail page).
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     logOperation('READ', 'properties', 'all', list.length, 'startup_sync');
     return list;
@@ -203,6 +184,31 @@ export async function fetchPropertiesFromFirestore(): Promise<any[]> {
       console.error('[Firestore] Error fetching properties:', err);
     }
     return [];
+  }
+}
+
+/**
+ * Fetches the full, ordered photo gallery for ONE property from its "photos"
+ * subcollection. Cheap to call for a single property (e.g. its detail page
+ * or the admin edit form) - only expensive if called in bulk for every
+ * property at once, which is why the list endpoint above doesn't call this.
+ */
+export async function fetchPropertyPhotosFromFirestore(propertyId: string): Promise<string[] | null> {
+  const db = getFirestoreInstance();
+  if (!db) return null;
+  try {
+    const photoSnap = await withTimeout(getDocs(collection(db, 'properties', propertyId, 'photos')), 4000);
+    if (photoSnap.empty) return null;
+    const photos: Array<{ index: number; url: string }> = [];
+    photoSnap.forEach((pDoc) => {
+      const p: any = pDoc.data();
+      if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
+    });
+    photos.sort((a, b) => a.index - b.index);
+    return photos.length > 0 ? photos.map((p) => p.url) : null;
+  } catch (err) {
+    console.warn(`[Firestore] Failed to fetch photos for property ${propertyId}:`, err);
+    return null;
   }
 }
 
