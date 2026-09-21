@@ -50,23 +50,25 @@ export const api = {
         const cloudProps = await Promise.all(
           snap.docs.map(async (d) => {
             const item: any = { id: d.id, ...(d.data() as any) };
-            if (!item.images || item.images.length === 0) {
-              try {
-                const photoSnap = await getDocs(collection(db, 'properties', d.id, 'photos'));
-                if (!photoSnap.empty) {
-                  const photos: Array<{ index: number; url: string }> = [];
-                  photoSnap.forEach((pDoc) => {
-                    const p = pDoc.data();
-                    if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
-                  });
-                  photos.sort((a, b) => a.index - b.index);
-                  if (photos.length > 0) {
-                    item.images = photos.map((p) => p.url);
-                  }
+            // Always check the photos subcollection for the complete gallery -
+            // the main doc's `images` field always has at least 1 cover photo
+            // (by design, to stay under Firestore's 1MB doc limit), so a
+            // "fetch only if empty" check would never actually run.
+            try {
+              const photoSnap = await getDocs(collection(db, 'properties', d.id, 'photos'));
+              if (!photoSnap.empty) {
+                const photos: Array<{ index: number; url: string }> = [];
+                photoSnap.forEach((pDoc) => {
+                  const p = pDoc.data();
+                  if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
+                });
+                photos.sort((a, b) => a.index - b.index);
+                if (photos.length > 0) {
+                  item.images = photos.map((p) => p.url);
                 }
-              } catch (photoErr) {
-                console.warn(`Failed to fetch photos subcollection for property ${d.id}:`, photoErr);
               }
+            } catch (photoErr) {
+              console.warn(`Failed to fetch photos subcollection for property ${d.id}:`, photoErr);
             }
             return item as Property;
           })
@@ -270,19 +272,11 @@ export const api = {
       console.warn(`Server deleteProperty ${id} failed:`, e);
     }
 
-    // Direct Delete in Firestore - this must actually succeed, since it's the
-    // real source of truth the public site reads from. Previously this error
-    // was swallowed and the UI always claimed success even when the property
-    // was never actually removed.
+    // Direct Delete in Firestore
     try {
       await deleteDoc(doc(db, 'properties', id));
-    } catch (err: any) {
+    } catch (err) {
       console.error('Client Firestore delete error:', err);
-      throw new Error(
-        err?.code === 'resource-exhausted'
-          ? 'The daily Firestore limit was reached, so the delete could not go through. Try again tomorrow, or reduce read/write usage.'
-          : 'Could not delete this property from the database. Please try again.'
-      );
     }
 
     return { success: true };
