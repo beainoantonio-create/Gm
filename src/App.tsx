@@ -136,8 +136,14 @@ export default function App() {
   });
 
   const handleSelectProperty = (property: Property) => {
+    // Show the property right away using the already-loaded (cover-photo-only)
+    // data, so opening it feels instant - then fetch the full photo gallery
+    // in the background and fill it in once it arrives.
     setSelectedProperty(property);
     setActiveView('detail');
+    api.getProperty(property.id)
+      .then((full) => setSelectedProperty((current) => (current?.id === property.id ? full : current)))
+      .catch((err) => console.warn('Failed to load full property details:', err));
   };
 
   const handleOpenAdmin = () => {
