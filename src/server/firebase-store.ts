@@ -167,10 +167,32 @@ export async function fetchPropertiesFromFirestore(): Promise<any[]> {
       return [];
     }
 
-    const list = snap.docs.map((d) => {
-      const data = d.data();
-      return { id: d.id, ...data };
-    });
+    // The main property doc only stores 1 cover photo, to stay under
+    // Firestore's 1MB-per-document limit - the rest of a property's photos
+    // live in a "photos" subcollection and need to be fetched and merged in
+    // separately, or only the cover photo would ever be shown.
+    const list = await Promise.all(
+      snap.docs.map(async (d) => {
+        const data: any = d.data();
+        try {
+          const photoSnap = await getDocs(collection(db, 'properties', d.id, 'photos'));
+          if (!photoSnap.empty) {
+            const photos: Array<{ index: number; url: string }> = [];
+            photoSnap.forEach((pDoc) => {
+              const p: any = pDoc.data();
+              if (p && p.url) photos.push({ index: p.index ?? 0, url: p.url });
+            });
+            photos.sort((a, b) => a.index - b.index);
+            if (photos.length > 0) {
+              data.images = photos.map((p) => p.url);
+            }
+          }
+        } catch (photoErr) {
+          console.warn(`[Firestore] Failed to fetch photos for property ${d.id}:`, photoErr);
+        }
+        return { id: d.id, ...data };
+      })
+    );
 
     logOperation('READ', 'properties', 'all', list.length, 'startup_sync');
     return list;
