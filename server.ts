@@ -22,8 +22,8 @@ import {
   persistFolderToFirestore,
   removeFolderFromFirestore,
   getFirestoreInstance
-} from './src/server/firebase-store';
-import { uploadImageToGithub } from './src/server/image-upload';
+} from './src/server/firebase-store.js';
+import { uploadImageToGithub } from './src/server/image-upload.js';
 import os from 'os';
 
 const app = express();
