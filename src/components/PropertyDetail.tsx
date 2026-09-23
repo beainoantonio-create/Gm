@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import {
   ArrowLeft,
   Share2,
@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { Property, BlockedSlot } from '../types';
 import { CalendarPicker } from './CalendarPicker';
-import { ReservationModal } from './ReservationModal';
+const ReservationModal = lazy(() => import('./ReservationModal').then((m) => ({ default: m.ReservationModal })));
 import { api } from '../services/api';
 import { Logo } from './Logo';
 import { calculateStayPricing } from '../utils/pricing';
@@ -720,17 +720,19 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
 
       {/* Reservation & WhatsApp Inquiry Modal */}
       {showReservationModal && (
-        <ReservationModal
-          property={property}
-          checkInDate={checkInDate}
-          checkOutDate={checkOutDate}
-          onClose={() => setShowReservationModal(false)}
-          onSuccess={() => {
-            loadAvailability();
-          }}
+        <Suspense fallback={null}>
+          <ReservationModal
+            property={property}
+            checkInDate={checkInDate}
+            checkOutDate={checkOutDate}
+            onClose={() => setShowReservationModal(false)}
+            onSuccess={() => {
+              loadAvailability();
+            }}
           currencySymbol={currencySymbol}
-          customLogo={customLogo}
-        />
+            customLogo={customLogo}
+          />
+        </Suspense>
       )}
     </div>
   );
