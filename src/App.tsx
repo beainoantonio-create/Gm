@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Property, Reservation, CompanySettings } from './types';
 import { api } from './services/api';
 import { Navbar } from './components/Navbar';
 import { PropertyCard } from './components/PropertyCard';
 import { PropertyDetail } from './components/PropertyDetail';
-import { AdminDashboard } from './components/AdminDashboard';
+const AdminDashboard = lazy(() => import('./components/AdminDashboard').then((m) => ({ default: m.AdminDashboard })));
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { MyTripsView } from './components/MyTripsView';
 import { SearchModal } from './components/SearchModal';
@@ -194,14 +194,16 @@ export default function App() {
 
       {/* Admin Dashboard View */}
       {activeView === 'admin' ? (
-        <AdminDashboard
-          onClose={() => {
-            setActiveView('home');
-            loadData();
-          }}
-          currencySymbol={currencySymbol}
-          onLogout={handleAdminLogout}
-        />
+        <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-slate-400">Loading admin dashboard...</div>}>
+          <AdminDashboard
+            onClose={() => {
+              setActiveView('home');
+              loadData();
+            }}
+            currencySymbol={currencySymbol}
+            onLogout={handleAdminLogout}
+          />
+        </Suspense>
       ) : (
         <>
           {/* Main Navigation Bar */}
