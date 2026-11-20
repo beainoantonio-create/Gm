@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronLeft, ChevronRight, Ban, CheckCircle2 } from 'lucide-react';
-import { BlockedSlot } from '../types';
+import { BlockedSlot, SpecialPrice, PricingMode } from '../types';
+import { getPeriodEndDate, getPeriodLabel, getSpecialPriceForDate, isPeriodProperty } from '../utils/pricing';
 
 interface CalendarPickerProps {
   checkInDate: string;  // YYYY-MM-DD
@@ -9,6 +10,12 @@ interface CalendarPickerProps {
   pricePerNight?: number;
   weekdayPrice?: number;
   weekendPrice?: number;
+  /** Nightly mode: custom date-range prices - these days get an amber marker. */
+  specialPrices?: SpecialPrice[];
+  /** 'monthly' / 'yearly': one click on a start date selects the whole rental term. */
+  pricingMode?: PricingMode;
+  periodCount?: number;
+  currencySymbol?: string;
   blockedSlots?: BlockedSlot[];
   bookedRanges?: Array<{ checkInDate: string; checkOutDate: string }>;
   minNights?: number;
@@ -21,6 +28,10 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
   pricePerNight,
   weekdayPrice,
   weekendPrice,
+  specialPrices = [],
+  pricingMode = 'nightly' as PricingMode,
+  periodCount = 1,
+  currencySymbol = '$',
   blockedSlots = [],
   bookedRanges = [],
   minNights = 1,
@@ -32,6 +43,11 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  const periodProp: { pricingMode: PricingMode; periodCount: number } = { pricingMode, periodCount };
+  const isPeriod = isPeriodProperty(periodProp);
+  const periodLabel = getPeriodLabel(periodProp);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Helper to format Date -> 'YYYY-MM-DD'
   const formatDateStr = (d: Date): string => {
@@ -106,6 +122,22 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
   };
 
   const handleDateClick = (dateStr: string) => {
+    setNotice(null);
+
+    // Monthly / yearly rentals: the guest only picks a START date - the end date is
+    // always start + the property's rental term (e.g. 1 month, 1 year).
+    if (isPeriod) {
+      if (isNightOccupied(dateStr).occupied) return;
+      const endStr = getPeriodEndDate(periodProp, dateStr);
+      if (isRangeAvailable(dateStr, endStr)) {
+        onChange(dateStr, endStr);
+      } else {
+        setNotice(`The full ${periodLabel} term isn't available from this date - part of it is already booked or blocked. Try another start date.`);
+        onChange('', '');
+      }
+      return;
+    }
+
     if (!checkInDate || (checkInDate && checkOutDate)) {
       // Start fresh check-in selection
       const { occupied } = isNightOccupied(dateStr);
@@ -210,9 +242,11 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
             const isCheckOut = dateStr === checkOutDate;
             const isInRange = checkInDate && checkOutDate && dateStr > checkInDate && dateStr < checkOutDate;
             const hasCheckoutTurnover = isCheckOutMorning(dateStr) && !unavailable;
+            const special = !isPeriod && !unavailable ? getSpecialPriceForDate(specialPrices, dateStr) : undefined;
 
             // Check if clickable in current state
             const isClickable = (() => {
+              if (isPeriod) return !unavailable;
               if (!checkInDate || (checkInDate && checkOutDate)) {
                 return !unavailable;
               }
@@ -257,13 +291,27 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
                       ? `Available for Check-in after 3:00 PM (Morning Check-out)`
                       : unavailable
                       ? reason
+                      : special
+                      ? `Special price: ${currencySymbol}${special.price} / night${special.label ? ` (${special.label})` : ''}`
+                      : isPeriod
+                      ? `Start a ${periodLabel} rental on ${dateStr}`
                       : `Select ${dateStr}`
                   }
                   className={dayClasses}
                 >
                   <span>{dayItem.date.getDate()}</span>
-                  {hasCheckoutTurnover && !isCheckIn && !isCheckOut && !isInRange && (
-                    <span className="w-1 h-1 rounded-full bg-emerald-500 -mt-0.5" />
+                  {((hasCheckoutTurnover && !isCheckIn && !isCheckOut && !isInRange) || special) && (
+                    <span className="flex items-center gap-0.5 -mt-0.5">
+                      {hasCheckoutTurnover && !isCheckIn && !isCheckOut && !isInRange && (
+                        <span className="w-1 h-1 rounded-full bg-emerald-500" />
+                      )}
+                      {special && (
+                        <span
+                          className={`w-1 h-1 rounded-full ${isCheckIn || isCheckOut ? 'bg-white' : 'bg-amber-500'}`}
+                          data-testid="special-price-dot"
+                        />
+                      )}
+                    </span>
                   )}
                 </button>
               </div>
@@ -280,13 +328,21 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h4 className="text-base font-bold text-[#222222]">
-            {checkInDate && checkOutDate
+            {isPeriod
+              ? checkInDate && checkOutDate
+                ? `${periodLabel} rental`
+                : `Select your start date (${periodLabel} rental)`
+              : checkInDate && checkOutDate
               ? `${Math.max(1, Math.ceil((new Date(checkOutDate).getTime() - new Date(checkInDate).getTime()) / (1000 * 60 * 60 * 24)))} nights stay`
               : 'Select check-in & check-out dates'}
           </h4>
           <p className="text-xs text-[#717171] mt-0.5">
-            {checkInDate ? `Check-in: ${checkInDate}` : 'Add your travel dates for exact pricing'}
-            {checkOutDate ? ` • Check-out: ${checkOutDate}` : ''}
+            {checkInDate
+              ? `${isPeriod ? 'Start' : 'Check-in'}: ${checkInDate}`
+              : isPeriod
+              ? 'Pick the day you want to move in - the end date is set automatically'
+              : 'Add your travel dates for exact pricing'}
+            {checkOutDate ? ` • ${isPeriod ? 'End' : 'Check-out'}: ${checkOutDate}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-1">
@@ -308,6 +364,12 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
           </button>
         </div>
       </div>
+
+      {notice && (
+        <div role="alert" className="mb-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 font-medium">
+          {notice}
+        </div>
+      )}
 
       {/* Months container */}
       <div className="flex flex-col md:flex-row gap-6">
@@ -336,7 +398,15 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
             </span>
             <span>Check-in available (11 AM Check-out)</span>
           </div>
-          {(weekdayPrice !== undefined || weekendPrice !== undefined) && (
+          {!isPeriod && specialPrices.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full border border-[#DDDDDD] bg-white relative flex items-center justify-center">
+                <span className="w-1 h-1 rounded-full bg-amber-500" />
+              </span>
+              <span>Special price (hover for rate)</span>
+            </div>
+          )}
+          {!isPeriod && (weekdayPrice !== undefined || weekendPrice !== undefined) && (
             <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium pl-2 border-l border-slate-200">
               <span className="text-blue-600 font-semibold">Sun–Thu: Weekday</span>
               <span>•</span>
@@ -348,7 +418,7 @@ export const CalendarPicker: React.FC<CalendarPickerProps> = ({
         {(checkInDate || checkOutDate) && (
           <button
             type="button"
-            onClick={() => onChange('', '')}
+            onClick={() => { setNotice(null); onChange('', ''); }}
             className="font-medium text-[#222222] underline hover:text-[#FF385C] transition cursor-pointer"
           >
             Clear dates
