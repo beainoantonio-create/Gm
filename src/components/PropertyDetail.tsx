@@ -35,7 +35,7 @@ import { CalendarPicker } from './CalendarPicker';
 const ReservationModal = lazy(() => import('./ReservationModal').then((m) => ({ default: m.ReservationModal })));
 import { api } from '../services/api';
 import { Logo } from './Logo';
-import { calculateStayPricing } from '../utils/pricing';
+import { calculateStayPricing, isPeriodProperty, getPeriodLabel, getPeriodPriceSuffix, formatDateStr } from '../utils/pricing';
 
 interface PropertyDetailProps {
   property: Property;
@@ -108,6 +108,12 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
 
   // Calculate pricing breakdown with dual weekday (Sun-Thu) & weekend (Fri-Sat) rates
   const pricing = calculateStayPricing(property, checkInDate, checkOutDate);
+  // Monthly / yearly rentals: one fixed price per term instead of nightly rates
+  const isPeriod = isPeriodProperty(property);
+  const periodSuffix = getPeriodPriceSuffix(property);
+  const todayStr = formatDateStr(new Date());
+  const hasUpcomingSpecialPrices =
+    !isPeriod && (property.specialPrices || []).some((sp) => sp.endDate >= todayStr);
 
   const handleShare = () => {
     if (navigator.share) {
@@ -375,6 +381,10 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                 pricePerNight={property.pricePerNight}
                 weekdayPrice={property.weekdayPrice}
                 weekendPrice={property.weekendPrice}
+                specialPrices={property.specialPrices}
+                pricingMode={property.pricingMode}
+                periodCount={property.periodCount}
+                currencySymbol={currencySymbol}
                 blockedSlots={blockedSlots}
                 bookedRanges={bookedRanges}
                 minNights={property.minNights || 1}
@@ -405,10 +415,21 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
               <div className="pb-4 border-b border-[#F1F1F1] space-y-2">
                 <div className="flex items-baseline justify-between">
                   <div className="flex items-baseline gap-1.5">
-                    <span className="text-3xl font-bold text-[#222222]">
-                      {currencySymbol}{property.weekdayPrice ?? property.pricePerNight}
-                    </span>
-                    <span className="text-[#717171] text-sm font-normal">/ night (Sun–Thu)</span>
+                    {isPeriod ? (
+                      <>
+                        <span className="text-3xl font-bold text-[#222222]">
+                          {currencySymbol}{(property.periodPrice ?? 0).toLocaleString()}
+                        </span>
+                        <span className="text-[#717171] text-sm font-normal">/ {periodSuffix}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-3xl font-bold text-[#222222]">
+                          {currencySymbol}{property.weekdayPrice ?? property.pricePerNight}
+                        </span>
+                        <span className="text-[#717171] text-sm font-normal">/ night (Sun–Thu)</span>
+                      </>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 text-xs font-semibold text-[#222222]">
                     <Star className="w-3.5 h-3.5 fill-[#222222] stroke-[#222222]" />
@@ -418,16 +439,36 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                   </div>
                 </div>
 
-                {/* Weekend Rate Badge */}
-                <div className="flex items-center justify-between text-xs bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-2">
-                  <span className="font-semibold text-slate-700 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                    Weekend Rate (Fri & Sat)
-                  </span>
-                  <span className="font-bold text-[#222222]">
-                    {currencySymbol}{property.weekendPrice ?? property.weekdayPrice ?? property.pricePerNight} <span className="font-normal text-slate-500">/ night</span>
-                  </span>
-                </div>
+                {isPeriod ? (
+                  <div className="flex items-center justify-between text-xs bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-2">
+                    <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      {property.pricingMode === 'yearly' ? 'Yearly rental' : 'Monthly rental'}
+                    </span>
+                    <span className="font-bold text-[#222222]">
+                      {getPeriodLabel(property)} <span className="font-normal text-slate-500">fixed term</span>
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    {/* Weekend Rate Badge */}
+                    <div className="flex items-center justify-between text-xs bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-2">
+                      <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                        Weekend Rate (Fri & Sat)
+                      </span>
+                      <span className="font-bold text-[#222222]">
+                        {currencySymbol}{property.weekendPrice ?? property.weekdayPrice ?? property.pricePerNight} <span className="font-normal text-slate-500">/ night</span>
+                      </span>
+                    </div>
+                    {hasUpcomingSpecialPrices && (
+                      <div className="flex items-center gap-1.5 text-xs bg-amber-50 border border-amber-200/80 rounded-xl px-3 py-2 text-amber-800 font-medium">
+                        <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                        Special prices apply on some dates - marked on the calendar
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
               {/* Date & Guest Inputs Selector Box */}
@@ -439,7 +480,7 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                     }}
                     className="p-3 bg-[#FAFAFA] hover:bg-[#F1F1F1] transition cursor-pointer"
                   >
-                    <span className="font-bold text-[#222222] uppercase text-[10px] block">CHECK-IN</span>
+                    <span className="font-bold text-[#222222] uppercase text-[10px] block">{isPeriod ? 'START DATE' : 'CHECK-IN'}</span>
                     <span className="text-sm font-medium text-[#222222] truncate block mt-0.5">
                       {checkInDate || 'Add date'}
                     </span>
@@ -450,9 +491,9 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                     }}
                     className="p-3 bg-[#FAFAFA] hover:bg-[#F1F1F1] transition cursor-pointer"
                   >
-                    <span className="font-bold text-[#222222] uppercase text-[10px] block">CHECK-OUT</span>
+                    <span className="font-bold text-[#222222] uppercase text-[10px] block">{isPeriod ? 'END DATE' : 'CHECK-OUT'}</span>
                     <span className="text-sm font-medium text-[#222222] truncate block mt-0.5">
-                      {checkOutDate || 'Add date'}
+                      {checkOutDate || (isPeriod ? 'Auto' : 'Add date')}
                     </span>
                   </div>
                 </div>
@@ -496,6 +537,15 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
               {/* Price Calculation details if dates are selected */}
               {checkInDate && checkOutDate && (
                 <div className="space-y-2.5 pt-4 border-t border-[#F1F1F1] text-sm text-[#717171]">
+                  {isPeriod && (
+                    <div className="flex justify-between">
+                      <span className="underline">
+                        {getPeriodLabel(property)} rental ({pricing.nights} days)
+                      </span>
+                      <span className="text-[#222222] font-medium">{currencySymbol}{pricing.basePrice.toLocaleString()}</span>
+                    </div>
+                  )}
+
                   {pricing.weekdayNights > 0 && (
                     <div className="flex justify-between">
                       <span className="underline">
@@ -514,6 +564,15 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                     </div>
                   )}
 
+                  {pricing.specialGroups.map((g, i) => (
+                    <div className="flex justify-between" key={`sp-${i}`}>
+                      <span className="underline">
+                        {currencySymbol}{g.rate} x {g.nights} night{g.nights > 1 ? 's' : ''} ({g.label || 'special price'})
+                      </span>
+                      <span className="text-[#222222] font-medium">{currencySymbol}{g.total}</span>
+                    </div>
+                  ))}
+
                   {pricing.cleaningFee > 0 && (
                     <div className="flex justify-between">
                       <span className="underline">Cleaning fee</span>
@@ -527,8 +586,8 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                     </div>
                   )}
                   <div className="flex justify-between pt-3 border-t border-[#DDDDDD] font-bold text-base text-[#222222]">
-                    <span>Total ({pricing.nights} night{pricing.nights > 1 ? 's' : ''})</span>
-                    <span className="text-[#222222]">{currencySymbol}{pricing.totalPrice}</span>
+                    <span>Total ({isPeriod ? getPeriodLabel(property) : `${pricing.nights} night${pricing.nights > 1 ? 's' : ''}`})</span>
+                    <span className="text-[#222222]">{currencySymbol}{isPeriod ? pricing.totalPrice.toLocaleString() : pricing.totalPrice}</span>
                   </div>
                 </div>
               )}
@@ -554,13 +613,15 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1">
             <span className="text-lg sm:text-xl font-black text-[#222222] tracking-tight">
-              {currencySymbol}{property.weekdayPrice ?? property.pricePerNight}
+              {currencySymbol}{isPeriod ? (property.periodPrice ?? 0).toLocaleString() : (property.weekdayPrice ?? property.pricePerNight)}
             </span>
-            <span className="text-xs text-[#717171] font-normal">/ night</span>
+            <span className="text-xs text-[#717171] font-normal">/ {isPeriod ? periodSuffix : 'night'}</span>
           </div>
           <div className="text-xs font-semibold text-[#FF385C] truncate mt-0.5">
             {checkInDate && checkOutDate ? (
-              <span>{pricing.nights} {pricing.nights === 1 ? 'night' : 'nights'} • {currencySymbol}{pricing.totalPrice} total</span>
+              <span>
+                {isPeriod ? getPeriodLabel(property) : `${pricing.nights} ${pricing.nights === 1 ? 'night' : 'nights'}`} • {currencySymbol}{isPeriod ? pricing.totalPrice.toLocaleString() : pricing.totalPrice} total
+              </span>
             ) : (
               <span
                 onClick={() => document.getElementById('property-availability-section')?.scrollIntoView({ behavior: 'smooth' })}

@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Property, Reservation } from '../types';
 import { api } from '../services/api';
-import { calculateStayPricing } from '../utils/pricing';
+import { calculateStayPricing, isPeriodProperty, getPeriodLabel } from '../utils/pricing';
 import { Logo } from './Logo';
 
 interface ReservationModalProps {
@@ -55,6 +55,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
 
   // Calculate pricing with dual weekday (Sun-Thu) and weekend (Fri-Sat) rates
   const pricing = calculateStayPricing(property, checkInDate, checkOutDate);
+  const isPeriod = isPeriodProperty(property);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,18 +151,24 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
             <div className="mt-5 p-4 rounded-2xl bg-slate-50 border border-slate-200">
               <div className="grid grid-cols-2 gap-3 text-sm pb-3 border-b border-slate-200">
                 <div>
-                  <span className="text-xs text-slate-400 block font-medium">CHECK-IN</span>
+                  <span className="text-xs text-slate-400 block font-medium">{isPeriod ? 'START DATE' : 'CHECK-IN'}</span>
                   <span className="font-semibold text-slate-800">{checkInDate || 'Not selected'}</span>
                   <span className="text-[11px] text-slate-500 block">From {property.checkInTime}</span>
                 </div>
                 <div>
-                  <span className="text-xs text-slate-400 block font-medium">CHECK-OUT</span>
+                  <span className="text-xs text-slate-400 block font-medium">{isPeriod ? 'END DATE' : 'CHECK-OUT'}</span>
                   <span className="font-semibold text-slate-800">{checkOutDate || 'Not selected'}</span>
                   <span className="text-[11px] text-slate-500 block">By {property.checkOutTime}</span>
                 </div>
               </div>
 
               <div className="mt-3 space-y-1.5 text-xs text-slate-600">
+                {isPeriod && (
+                  <div className="flex justify-between">
+                    <span>{getPeriodLabel(property)} rental ({pricing.nights} days)</span>
+                    <span className="font-medium text-slate-800">{currencySymbol}{pricing.basePrice.toLocaleString()}</span>
+                  </div>
+                )}
                 {pricing.weekdayNights > 0 && (
                   <div className="flex justify-between">
                     <span>{currencySymbol}{pricing.weekdayRate} x {pricing.weekdayNights} weekday night{pricing.weekdayNights > 1 ? 's' : ''} (Sun–Thu)</span>
@@ -174,6 +181,12 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                     <span className="font-medium text-slate-800">{currencySymbol}{pricing.weekendTotal}</span>
                   </div>
                 )}
+                {pricing.specialGroups.map((g, i) => (
+                  <div className="flex justify-between" key={`sp-${i}`}>
+                    <span>{currencySymbol}{g.rate} x {g.nights} night{g.nights > 1 ? 's' : ''} ({g.label || 'special price'})</span>
+                    <span className="font-medium text-slate-800">{currencySymbol}{g.total}</span>
+                  </div>
+                ))}
                 {pricing.cleaningFee > 0 && (
                   <div className="flex justify-between">
                     <span>Cleaning fee</span>
@@ -187,8 +200,8 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   </div>
                 )}
                 <div className="flex justify-between pt-2 border-t border-slate-200 text-sm font-bold text-slate-900">
-                  <span>Total Due ({pricing.nights} night{pricing.nights > 1 ? 's' : ''})</span>
-                  <span className="text-[#E00B41]">{currencySymbol}{pricing.totalPrice}</span>
+                  <span>Total Due ({isPeriod ? getPeriodLabel(property) : `${pricing.nights} night${pricing.nights > 1 ? 's' : ''}`})</span>
+                  <span className="text-[#E00B41]">{currencySymbol}{isPeriod ? pricing.totalPrice.toLocaleString() : pricing.totalPrice}</span>
                 </div>
               </div>
             </div>

@@ -32,7 +32,8 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { Property, Reservation, NotificationItem, CompanySettings, BlockedSlot } from '../types';
+import { Property, Reservation, NotificationItem, CompanySettings, BlockedSlot, SpecialPrice, PricingMode } from '../types';
+import { isPeriodProperty, getPeriodPriceSuffix, getPeriodLabel } from '../utils/pricing';
 import { api } from '../services/api';
 import { Logo } from './Logo';
 
@@ -64,6 +65,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     propertyType: 'Villa',
     location: { city: 'Beirut', country: 'Lebanon', address: '' },
     pricePerNight: 200,
+    pricingMode: 'nightly',
+    periodCount: 1,
+    specialPrices: [],
     cleaningFee: 40,
     serviceFeePercentage: 10,
     bedrooms: 2,
@@ -78,6 +82,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     whatsappNumber: '+96176141945',
     minNights: 1,
   });
+
+  // Custom date-range pricing inputs (property form)
+  const [spStart, setSpStart] = useState('');
+  const [spEnd, setSpEnd] = useState('');
+  const [spPrice, setSpPrice] = useState('');
+  const [spLabel, setSpLabel] = useState('');
+
+  const handleAddSpecialPrice = () => {
+    const price = Number(spPrice);
+    if (!spStart || !spEnd) {
+      showToast('Pick a start and end date for the custom price', 'error');
+      return;
+    }
+    if (spStart > spEnd) {
+      showToast('The start date must be on or before the end date', 'error');
+      return;
+    }
+    if (!(price > 0)) {
+      showToast('Enter a price greater than 0', 'error');
+      return;
+    }
+    const entry: SpecialPrice = {
+      id: `sp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      startDate: spStart,
+      endDate: spEnd,
+      price,
+      ...(spLabel.trim() ? { label: spLabel.trim() } : {}),
+    };
+    setPropertyForm((prev) => ({ ...prev, specialPrices: [...(prev.specialPrices || []), entry] }));
+    setSpStart('');
+    setSpEnd('');
+    setSpPrice('');
+    setSpLabel('');
+  };
+
+  const handleRemoveSpecialPrice = (id: string) => {
+    setPropertyForm((prev) => ({
+      ...prev,
+      specialPrices: (prev.specialPrices || []).filter((sp) => sp.id !== id),
+    }));
+  };
 
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isUploadingImages, setIsUploadingImages] = useState(false);
@@ -355,6 +400,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       pricePerNight: 150,
       weekdayPrice: 150,
       weekendPrice: 220,
+      pricingMode: 'nightly',
+      periodPrice: undefined,
+      periodCount: 1,
+      specialPrices: [],
       cleaningFee: 40,
       serviceFeePercentage: 10,
       bedrooms: 2,
@@ -744,12 +793,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {prop.propertyType}
                         </div>
                         <div className="absolute top-2.5 right-2.5 flex flex-col items-end gap-1">
-                          <span className="px-2 py-0.5 rounded-full bg-slate-900/90 border border-slate-700 text-[10px] font-bold text-white">
-                            {currencySymbol}{prop.weekdayPrice ?? prop.pricePerNight} <span className="text-slate-400 font-normal">Sun-Thu</span>
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full bg-rose-600 text-[10px] font-bold text-white shadow-xs">
-                            {currencySymbol}{prop.weekendPrice ?? prop.weekdayPrice ?? prop.pricePerNight} <span className="text-rose-200 font-normal">Fri-Sat</span>
-                          </span>
+                          {isPeriodProperty(prop) ? (
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-[10px] font-bold text-white shadow-xs">
+                              {currencySymbol}{(prop.periodPrice ?? 0).toLocaleString()} <span className="text-emerald-100 font-normal">/ {getPeriodPriceSuffix(prop)}</span>
+                            </span>
+                          ) : (
+                            <>
+                              <span className="px-2 py-0.5 rounded-full bg-slate-900/90 border border-slate-700 text-[10px] font-bold text-white">
+                                {currencySymbol}{prop.weekdayPrice ?? prop.pricePerNight} <span className="text-slate-400 font-normal">Sun-Thu</span>
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full bg-rose-600 text-[10px] font-bold text-white shadow-xs">
+                                {currencySymbol}{prop.weekendPrice ?? prop.weekdayPrice ?? prop.pricePerNight} <span className="text-rose-200 font-normal">Fri-Sat</span>
+                              </span>
+                              {(prop.specialPrices?.length ?? 0) > 0 && (
+                                <span className="px-2 py-0.5 rounded-full bg-amber-500 text-[10px] font-bold text-white shadow-xs">
+                                  {prop.specialPrices!.length} custom date price{prop.specialPrices!.length > 1 ? 's' : ''}
+                                </span>
+                              )}
+                            </>
+                          )}
                         </div>
                         {prop.images && prop.images.length > 0 && (
                           <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-black/70 text-[10px] text-white">
@@ -1035,17 +1097,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       )}
                     </div>
 
-                    {/* Dual Pricing Rates (Weekdays: Sun-Thu, Weekends: Fri-Sat) */}
-                    <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-3">
-                      <div className="flex items-center justify-between">
+                    {/* Pricing: per night (weekday / weekend + custom dates) OR per month / per year */}
+                    <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700 space-y-4">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
                         <span className="font-bold text-white text-xs flex items-center gap-1.5">
                           <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                          Nightly Pricing Rates
+                          Pricing
                         </span>
                         <span className="text-[11px] text-slate-400">
-                          Sun–Thu (Weekday) · Fri–Sat (Weekend)
+                          Choose how this property is rented out
                         </span>
                       </div>
+
+                      {/* Pricing mode selector */}
+                      <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Pricing model">
+                        {([
+                          ['nightly', 'Per night', 'Daily rates'],
+                          ['monthly', 'Per month', 'Monthly rental'],
+                          ['yearly', 'Per year', 'Yearly rental'],
+                        ] as Array<[PricingMode, string, string]>).map(([mode, title, hint]) => {
+                          const active = (propertyForm.pricingMode || 'nightly') === mode;
+                          return (
+                            <button
+                              key={mode}
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              data-testid={`pricing-mode-${mode}`}
+                              onClick={() => setPropertyForm({ ...propertyForm, pricingMode: mode })}
+                              className={`px-3 py-2.5 rounded-xl border text-left transition ${
+                                active
+                                  ? 'bg-rose-600/20 border-rose-500 text-white'
+                                  : 'bg-slate-900/80 border-slate-700 text-slate-300 hover:border-slate-500'
+                              }`}
+                            >
+                              <span className="block font-bold text-xs">{title}</span>
+                              <span className="block text-[10px] text-slate-400 mt-0.5">{hint}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {(propertyForm.pricingMode || 'nightly') === 'nightly' ? (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-200 text-xs">Nightly rates</span>
+                            <span className="text-[11px] text-slate-400">
+                              Sun–Thu (Weekday) · Fri–Sat (Weekend)
+                            </span>
+                          </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-700/80">
@@ -1106,6 +1206,187 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </span>
                         </div>
                       </div>
+
+                          {/* Custom prices for specific dates */}
+                          <div className="p-3 rounded-xl bg-slate-900/80 border border-amber-500/30 space-y-3" data-testid="special-prices-section">
+                            <div className="flex items-center justify-between flex-wrap gap-1">
+                              <span className="font-semibold text-slate-200 text-xs flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                                Custom prices for specific dates
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                Overrides the weekday / weekend rate on these nights
+                              </span>
+                            </div>
+
+                            {(propertyForm.specialPrices || []).length > 0 && (
+                              <ul className="space-y-1.5">
+                                {[...(propertyForm.specialPrices || [])]
+                                  .sort((a, b) => a.startDate.localeCompare(b.startDate))
+                                  .map((sp) => (
+                                    <li
+                                      key={sp.id}
+                                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-xs"
+                                    >
+                                      <div className="min-w-0">
+                                        <span className="font-semibold text-white">
+                                          {sp.startDate === sp.endDate ? sp.startDate : `${sp.startDate} → ${sp.endDate}`}
+                                        </span>
+                                        {sp.label && <span className="ml-2 text-slate-400">{sp.label}</span>}
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold">
+                                          {currencySymbol}{sp.price} / night
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveSpecialPrice(sp.id)}
+                                          className="p-1 rounded-md text-slate-400 hover:text-rose-400 hover:bg-slate-700 transition"
+                                          aria-label="Remove custom price"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </li>
+                                  ))}
+                              </ul>
+                            )}
+
+                            <div
+                              className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleAddSpecialPrice();
+                                }
+                              }}
+                            >
+                              <div>
+                                <label className="block text-[10px] font-semibold text-slate-400 mb-1">From (first night)</label>
+                                <input
+                                  type="date"
+                                  value={spStart}
+                                  data-testid="sp-start"
+                                  onChange={(e) => {
+                                    setSpStart(e.target.value);
+                                    if (!spEnd || spEnd < e.target.value) setSpEnd(e.target.value);
+                                  }}
+                                  className="w-full px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-semibold text-slate-400 mb-1">To (last night)</label>
+                                <input
+                                  type="date"
+                                  value={spEnd}
+                                  min={spStart || undefined}
+                                  data-testid="sp-end"
+                                  onChange={(e) => setSpEnd(e.target.value)}
+                                  className="w-full px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-semibold text-slate-400 mb-1">Price / night ({currencySymbol})</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={spPrice}
+                                  data-testid="sp-price"
+                                  onChange={(e) => setSpPrice(e.target.value)}
+                                  placeholder="e.g. 300"
+                                  className="w-full px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-semibold text-slate-400 mb-1">Label (optional)</label>
+                                <input
+                                  type="text"
+                                  value={spLabel}
+                                  maxLength={60}
+                                  data-testid="sp-label"
+                                  onChange={(e) => setSpLabel(e.target.value)}
+                                  placeholder="e.g. Christmas"
+                                  className="w-full px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleAddSpecialPrice}
+                                data-testid="sp-add"
+                                className="col-span-2 sm:col-span-1 py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold text-xs transition flex items-center justify-center gap-1"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>Add</span>
+                              </button>
+                            </div>
+                            <p className="text-[10px] text-slate-500">
+                              Use the same date in both fields for a single night. If two ranges overlap, the one added last wins. Remember to save the listing afterwards.
+                            </p>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="p-3 rounded-xl bg-slate-900/80 border border-emerald-500/30 space-y-3" data-testid="period-pricing-section">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-200 text-xs">
+                              {propertyForm.pricingMode === 'yearly' ? 'Yearly' : 'Monthly'} rental price
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                              Price / duration
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block font-semibold text-slate-300 mb-1 text-xs">Price ({currencySymbol}) *</label>
+                              <input
+                                type="number"
+                                required
+                                min="1"
+                                data-testid="period-price"
+                                value={propertyForm.periodPrice ?? ''}
+                                onChange={(e) =>
+                                  setPropertyForm({
+                                    ...propertyForm,
+                                    periodPrice: e.target.value === '' ? undefined : Number(e.target.value),
+                                  })
+                                }
+                                placeholder={propertyForm.pricingMode === 'yearly' ? 'e.g. 20000' : 'e.g. 2000'}
+                                className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="block font-semibold text-slate-300 mb-1 text-xs">
+                                Duration ({propertyForm.pricingMode === 'yearly' ? 'years' : 'months'}) *
+                              </label>
+                              <input
+                                type="number"
+                                required
+                                min="1"
+                                step="1"
+                                data-testid="period-count"
+                                value={propertyForm.periodCount ?? 1}
+                                onChange={(e) =>
+                                  setPropertyForm({
+                                    ...propertyForm,
+                                    periodCount: Math.max(1, Math.floor(Number(e.target.value)) || 1),
+                                  })
+                                }
+                                className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="text-xs text-slate-300 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2" data-testid="period-preview">
+                            Guests will see:{' '}
+                            <span className="font-bold text-white">
+                              {currencySymbol}{(propertyForm.periodPrice ?? 0).toLocaleString()} / {getPeriodLabel({ pricingMode: propertyForm.pricingMode, periodCount: propertyForm.periodCount })}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-500">
+                            Guests pick a start date and the end date is set automatically. The price is charged as one flat amount - no nightly rates, cleaning or service fees.
+                          </p>
+                        </div>
+                      )}
                     </div>
 
                     {/* Capacity & Room Specifications */}
@@ -1625,9 +1906,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <h4 className="font-bold text-white text-sm">{resv.propertyTitle}</h4>
                           </div>
                           <p className="text-xs text-slate-400 mt-0.5">
-                            {resv.checkInDate} → {resv.checkOutDate} ({resv.nights} nights) • {resv.guestsCount} guests
+                            {resv.checkInDate} → {resv.checkOutDate} ({resv.periodLabel ? `${resv.periodLabel} rental • ${resv.nights} days` : `${resv.nights} nights`}) • {resv.guestsCount} guests
                           </p>
-                          {(resv.weekdayNights !== undefined && resv.weekendNights !== undefined) && (
+                          {resv.periodLabel && (
+                            <div className="flex items-center gap-2 mt-1 text-[11px] font-mono">
+                              <span className="bg-emerald-950/60 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800/40">
+                                {resv.pricingMode === 'yearly' ? 'Yearly' : 'Monthly'} • {resv.periodLabel}
+                              </span>
+                            </div>
+                          )}
+                          {!resv.periodLabel && (resv.weekdayNights !== undefined && resv.weekendNights !== undefined) && (
                             <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 font-mono">
                               {resv.weekdayNights > 0 && (
                                 <span className="bg-blue-950/60 text-blue-300 px-2 py-0.5 rounded border border-blue-800/40">
@@ -1637,6 +1925,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               {resv.weekendNights > 0 && (
                                 <span className="bg-rose-950/60 text-rose-300 px-2 py-0.5 rounded border border-rose-800/40">
                                   {resv.weekendNights} Wkend ({currencySymbol}{resv.weekendPrice ?? ''})
+                                </span>
+                              )}
+                              {(resv.specialNights ?? 0) > 0 && (
+                                <span className="bg-amber-950/60 text-amber-300 px-2 py-0.5 rounded border border-amber-800/40">
+                                  {resv.specialNights} Custom ({currencySymbol}{resv.specialTotal ?? ''})
                                 </span>
                               )}
                             </div>

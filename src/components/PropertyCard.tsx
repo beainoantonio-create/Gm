@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Star, Heart, ChevronLeft, ChevronRight, MapPin, Users, BedDouble, Building2 } from 'lucide-react';
 import { Property } from '../types';
+import { isPeriodProperty, getPeriodPriceSuffix } from '../utils/pricing';
 
 interface PropertyCardProps {
   property: Property;
@@ -141,19 +142,29 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
       </div>
 
       {/* Price */}
-      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[#222222] text-sm">
-        <div className="flex items-baseline gap-1">
+      {isPeriodProperty(property) ? (
+        // Monthly / yearly rental: one price per term, e.g. "$2000 / month"
+        <div className="mt-1.5 flex items-baseline gap-1 text-[#222222] text-sm">
           <span className="font-bold">
-            {currencySymbol}{property.weekdayPrice ?? property.pricePerNight}
+            {currencySymbol}{(property.periodPrice ?? 0).toLocaleString()}
           </span>
-          <span className="text-[#717171] text-xs font-normal">night</span>
+          <span className="text-[#717171] text-xs font-normal">/ {getPeriodPriceSuffix(property)}</span>
         </div>
-        {(property.weekendPrice && property.weekendPrice !== (property.weekdayPrice ?? property.pricePerNight)) ? (
-          <span className="text-[11px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md font-medium">
-            {currencySymbol}{property.weekendPrice} Fri–Sat
-          </span>
-        ) : null}
-      </div>
+      ) : (
+        <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[#222222] text-sm">
+          <div className="flex items-baseline gap-1">
+            <span className="font-bold">
+              {currencySymbol}{property.weekdayPrice ?? property.pricePerNight}
+            </span>
+            <span className="text-[#717171] text-xs font-normal">night</span>
+          </div>
+          {(property.weekendPrice && property.weekendPrice !== (property.weekdayPrice ?? property.pricePerNight)) ? (
+            <span className="text-[11px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md font-medium">
+              {currencySymbol}{property.weekendPrice} Fri–Sat
+            </span>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 };
