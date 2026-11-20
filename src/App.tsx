@@ -1,4 +1,4 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, lazy, Suspense } from 'react';
 import { Property, Reservation, CompanySettings } from './types';
 import { api } from './services/api';
 import { Navbar } from './components/Navbar';
@@ -10,6 +10,7 @@ import { MyTripsView } from './components/MyTripsView';
 import { SearchModal } from './components/SearchModal';
 import { PushNotificationManager } from './components/PushNotificationManager';
 import { Logo } from './components/Logo';
+import { newShuffleSeed, shuffleWithSeed } from './utils/shuffle';
 import {
   Compass,
   Building2,
@@ -80,6 +81,14 @@ export default function App() {
   const [searchGuests, setSearchGuests] = useState<number>(1);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
 
+  // Home page card order: random on every visit / refresh (and when the logo or Home is
+  // clicked), but stable while browsing so cards don't jump around when data finishes loading.
+  const [shuffleSeed, setShuffleSeed] = useState<number>(() => newShuffleSeed());
+  const shuffledProperties = useMemo(
+    () => shuffleWithSeed(properties, shuffleSeed),
+    [properties, shuffleSeed]
+  );
+
   useEffect(() => {
     loadData();
   }, []);
@@ -121,7 +130,7 @@ export default function App() {
   };
 
   // Filter properties
-  const filteredProperties = properties.filter((p) => {
+  const filteredProperties = shuffledProperties.filter((p) => {
     if (selectedCategory !== 'all' && p.propertyType !== selectedCategory) {
       return false;
     }
@@ -220,6 +229,7 @@ export default function App() {
             onNavigateHome={() => {
               setActiveView('home');
               setSelectedProperty(null);
+              setShuffleSeed(newShuffleSeed());
             }}
             onNavigateTrips={() => setActiveView('my-trips')}
             customLogo={settings?.customLogoData}

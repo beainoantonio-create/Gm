@@ -24,6 +24,7 @@ import {
   getFirestoreInstance
 } from './src/server/firebase-store.js';
 import { uploadImageToGithub } from './src/server/image-upload.js';
+import { calculateStayPricing, isPeriodProperty, getPeriodEndDate } from './src/utils/pricing.js';
 import os from 'os';
 
 const app = express();
@@ -333,6 +334,24 @@ app.post('/api/settings', (req, res) => {
   res.json(db.settings);
 });
 
+// Keeps only well-formed custom date-range prices (valid dates, price > 0, start <= end).
+function sanitizeSpecialPrices(input: any): any[] {
+  if (!Array.isArray(input)) return [];
+  const isDate = (v: any) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  return input
+    .filter((sp) => sp && isDate(sp.startDate) && isDate(sp.endDate) && Number(sp.price) > 0)
+    .map((sp) => {
+      const [startDate, endDate] = sp.startDate <= sp.endDate ? [sp.startDate, sp.endDate] : [sp.endDate, sp.startDate];
+      return {
+        id: sp.id || `sp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        startDate,
+        endDate,
+        price: Number(sp.price),
+        ...(sp.label ? { label: String(sp.label).slice(0, 60) } : {})
+      };
+    });
+}
+
 // 3. Properties - Direct in-memory fast reads (Zero Firestore reads during page loads)
 app.get('/api/properties', (req, res) => {
   const db = readDb();
@@ -366,6 +385,10 @@ app.post('/api/properties', async (req, res) => {
     pricePerNight: Number(req.body.pricePerNight) || Number(req.body.weekdayPrice) || 150,
     weekdayPrice: Number(req.body.weekdayPrice) || Number(req.body.pricePerNight) || 150,
     weekendPrice: Number(req.body.weekendPrice) || Number(req.body.weekdayPrice) || Number(req.body.pricePerNight) || 180,
+    pricingMode: ['monthly', 'yearly'].includes(req.body.pricingMode) ? req.body.pricingMode : 'nightly',
+    periodPrice: Number(req.body.periodPrice) || 0,
+    periodCount: Math.max(1, Math.floor(Number(req.body.periodCount)) || 1),
+    specialPrices: sanitizeSpecialPrices(req.body.specialPrices),
     cleaningFee: Number(req.body.cleaningFee) || 30,
     serviceFeePercentage: Number(req.body.serviceFeePercentage) || 10,
     bedrooms: Number(req.body.bedrooms) || 1,
@@ -404,6 +427,7 @@ app.put('/api/properties/:id', async (req, res) => {
   db.properties[index] = {
     ...db.properties[index],
     ...req.body,
+    ...(req.body.specialPrices !== undefined ? { specialPrices: sanitizeSpecialPrices(req.body.specialPrices) } : {}),
     images: cleanImages,
     id: req.params.id
   };
@@ -694,33 +718,18 @@ app.post('/api/reservations', async (req, res) => {
     return res.status(404).json({ error: 'Property not found' });
   }
 
-  // Calculate nights & dual pricing (Weekdays: Sun-Thu, Weekends: Fri-Sat)
-  const start = new Date(checkInDate + 'T00:00:00');
-  const end = new Date(checkOutDate + 'T00:00:00');
-  let weekdayNights = 0;
-  let weekendNights = 0;
+  // Monthly / yearly properties: the server decides the check-out date from the
+  // start date + the property's rental term, so it can't be spoofed by the client.
+  const effectiveCheckOut = isPeriodProperty(property) ? getPeriodEndDate(property, checkInDate) : checkOutDate;
 
-  const curr = new Date(start);
-  while (curr < end) {
-    const day = curr.getDay(); // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
-    if (day === 5 || day === 6) {
-      weekendNights++;
-    } else {
-      weekdayNights++;
-    }
-    curr.setDate(curr.getDate() + 1);
-  }
-
-  const nights = Math.max(1, weekdayNights + weekendNights);
-  const weekdayPrice = property.weekdayPrice ?? property.pricePerNight ?? 150;
-  const weekendPrice = property.weekendPrice ?? property.weekdayPrice ?? property.pricePerNight ?? 180;
-  
-  const weekdayTotal = weekdayNights * weekdayPrice;
-  const weekendTotal = weekendNights * weekendPrice;
-  const basePrice = weekdayTotal + weekendTotal;
-  const cleaningFee = property.cleaningFee || 0;
-  const serviceFee = Math.round((basePrice * (property.serviceFeePercentage || 10)) / 100);
-  const totalPrice = basePrice + cleaningFee + serviceFee;
+  // Shared pricing: weekday (Sun-Thu) / weekend (Fri-Sat) rates, custom date-range
+  // prices, or a flat monthly/yearly term price.
+  const pricing = calculateStayPricing(property, checkInDate, effectiveCheckOut);
+  const {
+    nights, weekdayNights, weekendNights, weekdayRate: weekdayPrice, weekendRate: weekendPrice,
+    cleaningFee, serviceFee, totalPrice
+  } = pricing;
+  const isPeriodBooking = pricing.mode !== 'nightly';
 
   const reservationId = `GM-${Math.floor(100000 + Math.random() * 900000)}`;
 
@@ -734,16 +743,20 @@ app.post('/api/reservations', async (req, res) => {
     guestEmail: guestEmail || '',
     guestPhone,
     checkInDate,
-    checkOutDate,
+    checkOutDate: effectiveCheckOut,
     nights,
     weekdayNights,
     weekendNights,
     weekdayPrice,
     weekendPrice,
+    specialNights: pricing.specialNights,
+    specialTotal: pricing.specialTotal,
+    pricingMode: pricing.mode,
+    ...(isPeriodBooking ? { periodLabel: pricing.periodLabel } : {}),
     guestsCount: Number(guestsCount) || 1,
     adults: Number(adults) || Number(guestsCount) || 1,
     children: Number(children) || 0,
-    pricePerNight: weekdayPrice,
+    pricePerNight: isPeriodBooking ? (pricing.periodPrice ?? 0) : weekdayPrice,
     cleaningFee,
     serviceFee,
     totalPrice,
@@ -759,16 +772,27 @@ app.post('/api/reservations', async (req, res) => {
 
   db.reservations.unshift(newReservation);
 
-  // Automated notification for staff
-  const nightBreakdownStr = weekendNights > 0
-    ? `${nights} nights (${weekdayNights} weekday @ $${weekdayPrice} + ${weekendNights} weekend @ $${weekendPrice})`
-    : `${nights} weekday nights @ $${weekdayPrice}`;
+  // Human-readable price breakdown, shared by the staff notification and the WhatsApp message
+  const cs = db.settings.currencySymbol;
+  const describeBreakdown = (sym: string, withEmoji: boolean) => {
+    if (isPeriodBooking) {
+      return `${withEmoji ? '🗓️ Rental term: ' : ''}${pricing.periodLabel} @ ${sym}${pricing.periodPrice} (${nights} days)`;
+    }
+    const parts: string[] = [];
+    if (weekdayNights > 0) parts.push(`${weekdayNights} Weekday Sun-Thu @ ${sym}${weekdayPrice}`);
+    if (weekendNights > 0) parts.push(`${weekendNights} Weekend Fri-Sat @ ${sym}${weekendPrice}`);
+    for (const g of pricing.specialGroups) {
+      parts.push(`${g.nights} Special${g.label ? ` (${g.label})` : ''} @ ${sym}${g.rate}`);
+    }
+    return `${withEmoji ? '🌙 ' : ''}Nights: ${nights} (${parts.join(' + ')})`;
+  };
+  const nightBreakdownStr = describeBreakdown(cs, false);
 
   const notif = {
     id: `notif-${Date.now()}`,
     type: 'booking_inquiry',
     title: `New Reservation Request: ${guestName}`,
-    message: `${guestName} inquired for ${property.title} (${checkInDate} to ${checkOutDate}, ${nightBreakdownStr}). Phone: ${guestPhone}. Total: $${totalPrice}`,
+    message: `${guestName} inquired for ${property.title} (${checkInDate} to ${effectiveCheckOut}, ${nightBreakdownStr}). Phone: ${guestPhone}. Total: ${cs}${totalPrice}`,
     targetEmail: db.settings.contactEmail,
     targetPhone: guestPhone,
     date: new Date().toISOString(),
@@ -786,11 +810,9 @@ app.post('/api/reservations', async (req, res) => {
 
   // Generate WhatsApp Direct URL
   const targetWhatsApp = (property.whatsappNumber || db.settings.whatsappNumber || '').replace(/[^\d+]/g, '');
-  const breakdownMsg = weekendNights > 0
-    ? `🌙 Nights: ${nights} (${weekdayNights} Weekday Sun-Thu @ ${db.settings.currencySymbol}${weekdayPrice} + ${weekendNights} Weekend Fri-Sat @ ${db.settings.currencySymbol}${weekendPrice})`
-    : `🌙 Nights: ${nights} (${weekdayNights} Weekday Sun-Thu @ ${db.settings.currencySymbol}${weekdayPrice})`;
+  const breakdownMsg = describeBreakdown(db.settings.currencySymbol, true);
 
-  const greetingText = `Hello GM Management, I would like to inquire about booking ${property.title} in ${property.location.city}.\n\n📅 Check-in: ${checkInDate}\n📅 Check-out: ${checkOutDate}\n${breakdownMsg}\n👥 Guests: ${guestsCount}\n💰 Estimated Total: ${db.settings.currencySymbol}${totalPrice}\n👤 Guest Name: ${guestName}\n📞 Phone: ${guestPhone}\n🏷️ Reservation ID: ${reservationId}\n\nPlease confirm availability to finalize the booking.`;
+  const greetingText = `Hello GM Management, I would like to inquire about booking ${property.title} in ${property.location.city}.\n\n📅 Check-in: ${checkInDate}\n📅 Check-out: ${effectiveCheckOut}\n${breakdownMsg}\n👥 Guests: ${guestsCount}\n💰 Estimated Total: ${db.settings.currencySymbol}${totalPrice}\n👤 Guest Name: ${guestName}\n📞 Phone: ${guestPhone}\n🏷️ Reservation ID: ${reservationId}\n\nPlease confirm availability to finalize the booking.`;
   const whatsappUrl = `https://wa.me/${targetWhatsApp.replace('+', '')}?text=${encodeURIComponent(greetingText)}`;
 
   res.status(201).json({
