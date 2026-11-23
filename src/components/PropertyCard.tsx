@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Star, Heart, ChevronLeft, ChevronRight, MapPin, Users, BedDouble, Building2 } from 'lucide-react';
 import { Property } from '../types';
-import { isPeriodProperty, getPeriodPriceSuffix } from '../utils/pricing';
+import { isPeriodProperty, isQuoteProperty, getPeriodPriceSuffix } from '../utils/pricing';
 
 interface PropertyCardProps {
   property: Property;
@@ -142,7 +142,13 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
       </div>
 
       {/* Price */}
-      {isPeriodProperty(property) ? (
+      {isQuoteProperty(property) ? (
+        // No fixed price: guests pick their dates and ask for a quote
+        <div className="mt-1.5 flex items-baseline gap-1.5 text-[#222222] text-sm">
+          <span className="font-bold">Get a quote</span>
+          <span className="text-[#717171] text-xs font-normal">for your dates</span>
+        </div>
+      ) : isPeriodProperty(property) ? (
         // Monthly / yearly rental: one price per term, e.g. "$2000 / month"
         <div className="mt-1.5 flex items-baseline gap-1 text-[#222222] text-sm">
           <span className="font-bold">

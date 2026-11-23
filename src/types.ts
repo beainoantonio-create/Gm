@@ -11,7 +11,13 @@ export interface SpecialPrice {
   label?: string;    // e.g. "Christmas", "Summer peak"
 }
 
-export type PricingMode = 'nightly' | 'monthly' | 'yearly';
+/**
+ * 'quote'   = no price shown; the guest picks dates and requests a quote (default for properties
+ *             that have no pricing mode saved yet).
+ * 'nightly' = per-night rates (weekday / weekend + custom date prices).
+ * 'monthly' / 'yearly' = one fixed price per rental term.
+ */
+export type PricingMode = 'nightly' | 'monthly' | 'yearly' | 'quote';
 
 export interface Property {
   id: string;
@@ -30,6 +36,8 @@ export interface Property {
   weekendPrice?: number; // Friday & Saturday
   /** 'nightly' (default) = per-night rates. 'monthly' / 'yearly' = one fixed price per rental term. */
   pricingMode?: PricingMode;
+  /** Internal: set once the owner-requested "everything starts on Get a quote" default was applied to this property. */
+  quoteDefaultApplied?: boolean;
   /** Monthly / yearly mode: price for ONE rental term, e.g. 2000 for "$2000 / 1 month". */
   periodPrice?: number;
   /** Monthly / yearly mode: length of the term in months or years, e.g. 1 or 6 (months) / 1 (year). */

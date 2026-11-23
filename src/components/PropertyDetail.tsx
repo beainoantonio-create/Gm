@@ -35,7 +35,7 @@ import { CalendarPicker } from './CalendarPicker';
 const ReservationModal = lazy(() => import('./ReservationModal').then((m) => ({ default: m.ReservationModal })));
 import { api } from '../services/api';
 import { Logo } from './Logo';
-import { calculateStayPricing, isPeriodProperty, getPeriodLabel, getPeriodPriceSuffix, formatDateStr } from '../utils/pricing';
+import { calculateStayPricing, isPeriodProperty, isQuoteProperty, getPricingMode, getPeriodLabel, getPeriodPriceSuffix, formatDateStr } from '../utils/pricing';
 
 interface PropertyDetailProps {
   property: Property;
@@ -110,10 +110,12 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
   const pricing = calculateStayPricing(property, checkInDate, checkOutDate);
   // Monthly / yearly rentals: one fixed price per term instead of nightly rates
   const isPeriod = isPeriodProperty(property);
+  // "Get a quote": no price is shown - the guest picks dates and asks us for a quote
+  const isQuote = isQuoteProperty(property);
   const periodSuffix = getPeriodPriceSuffix(property);
   const todayStr = formatDateStr(new Date());
   const hasUpcomingSpecialPrices =
-    !isPeriod && (property.specialPrices || []).some((sp) => sp.endDate >= todayStr);
+    !isPeriod && !isQuote && (property.specialPrices || []).some((sp) => sp.endDate >= todayStr);
 
   const handleShare = () => {
     if (navigator.share) {
@@ -368,7 +370,9 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                 {loadingAvailability && <span className="text-xs text-[#717171] animate-pulse">Syncing...</span>}
               </div>
               <p className="text-xs text-[#717171] mb-4">
-                Prices and availability are synced in real-time. Blocked dates are reserved or held by staff.
+                {isQuote
+                  ? 'Choose your dates and we will send you a quote for them. Blocked dates are reserved or held by staff.'
+                  : 'Prices and availability are synced in real-time. Blocked dates are reserved or held by staff.'}
               </p>
 
               <CalendarPicker
@@ -379,10 +383,10 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                   setCheckOutDate(outDate);
                 }}
                 pricePerNight={property.pricePerNight}
-                weekdayPrice={property.weekdayPrice}
-                weekendPrice={property.weekendPrice}
-                specialPrices={property.specialPrices}
-                pricingMode={property.pricingMode}
+                weekdayPrice={isQuote ? undefined : property.weekdayPrice}
+                weekendPrice={isQuote ? undefined : property.weekendPrice}
+                specialPrices={isQuote ? [] : property.specialPrices}
+                pricingMode={getPricingMode(property)}
                 periodCount={property.periodCount}
                 currencySymbol={currencySymbol}
                 blockedSlots={blockedSlots}
@@ -415,7 +419,12 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
               <div className="pb-4 border-b border-[#F1F1F1] space-y-2">
                 <div className="flex items-baseline justify-between">
                   <div className="flex items-baseline gap-1.5">
-                    {isPeriod ? (
+                    {isQuote ? (
+                      <>
+                        <span className="text-2xl font-bold text-[#222222]" data-testid="quote-header">Get a quote</span>
+                        <span className="text-[#717171] text-sm font-normal">for your dates</span>
+                      </>
+                    ) : isPeriod ? (
                       <>
                         <span className="text-3xl font-bold text-[#222222]">
                           {currencySymbol}{(property.periodPrice ?? 0).toLocaleString()}
@@ -439,7 +448,14 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                   </div>
                 </div>
 
-                {isPeriod ? (
+                {isQuote ? (
+                  <div className="flex items-start gap-2 text-xs bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-2.5 text-slate-700">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 mt-1 shrink-0"></span>
+                    <span>
+                      Prices vary by season. Pick your dates and send a request - we'll reply with a quote for your stay.
+                    </span>
+                  </div>
+                ) : isPeriod ? (
                   <div className="flex items-center justify-between text-xs bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-2">
                     <span className="font-semibold text-slate-700 flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
@@ -527,15 +543,22 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
                 id="reserve-property-button"
               >
                 <MessageCircle className="w-4 h-4 fill-white text-transparent" />
-                <span>{checkInDate && checkOutDate ? 'Reserve & Inquire on WhatsApp' : 'Check Availability'}</span>
+                <span>{checkInDate && checkOutDate ? (isQuote ? 'Request a Quote on WhatsApp' : 'Reserve & Inquire on WhatsApp') : 'Check Availability'}</span>
               </button>
 
               <p className="text-center text-xs text-[#717171]">
-                Direct WhatsApp booking • Instant confirmation
+                {isQuote ? 'No payment now • We reply with your quote' : 'Direct WhatsApp booking • Instant confirmation'}
               </p>
 
+              {checkInDate && checkOutDate && isQuote && (
+                <div className="pt-4 border-t border-[#F1F1F1] flex justify-between text-sm" data-testid="quote-summary">
+                  <span className="text-[#717171]">{pricing.nights} night{pricing.nights > 1 ? 's' : ''} selected</span>
+                  <span className="font-semibold text-[#222222]">Price on request</span>
+                </div>
+              )}
+
               {/* Price Calculation details if dates are selected */}
-              {checkInDate && checkOutDate && (
+              {checkInDate && checkOutDate && !isQuote && (
                 <div className="space-y-2.5 pt-4 border-t border-[#F1F1F1] text-sm text-[#717171]">
                   {isPeriod && (
                     <div className="flex justify-between">
@@ -612,16 +635,26 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1">
+            {isQuote ? (
+              <span className="text-lg sm:text-xl font-black text-[#222222] tracking-tight">Get a quote</span>
+            ) : (
+            <>
             <span className="text-lg sm:text-xl font-black text-[#222222] tracking-tight">
               {currencySymbol}{isPeriod ? (property.periodPrice ?? 0).toLocaleString() : (property.weekdayPrice ?? property.pricePerNight)}
             </span>
             <span className="text-xs text-[#717171] font-normal">/ {isPeriod ? periodSuffix : 'night'}</span>
+            </>
+            )}
           </div>
           <div className="text-xs font-semibold text-[#FF385C] truncate mt-0.5">
             {checkInDate && checkOutDate ? (
+              isQuote ? (
+                <span>{pricing.nights} {pricing.nights === 1 ? 'night' : 'nights'} • price on request</span>
+              ) : (
               <span>
                 {isPeriod ? getPeriodLabel(property) : `${pricing.nights} ${pricing.nights === 1 ? 'night' : 'nights'}`} • {currencySymbol}{isPeriod ? pricing.totalPrice.toLocaleString() : pricing.totalPrice} total
               </span>
+              )
             ) : (
               <span
                 onClick={() => document.getElementById('property-availability-section')?.scrollIntoView({ behavior: 'smooth' })}
@@ -645,7 +678,7 @@ export const PropertyDetail: React.FC<PropertyDetailProps> = ({
           className="shrink-0 py-3 px-5 sm:px-6 rounded-xl bg-[#222222] hover:bg-black active:scale-95 text-white font-bold text-sm shadow-md flex items-center gap-2 transition cursor-pointer"
         >
           <MessageCircle className="w-4 h-4 fill-white" />
-          <span>{checkInDate && checkOutDate ? 'Reserve' : 'Check Dates'}</span>
+          <span>{checkInDate && checkOutDate ? (isQuote ? 'Get quote' : 'Reserve') : 'Check Dates'}</span>
         </button>
       </div>
 

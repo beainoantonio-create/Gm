@@ -86,7 +86,7 @@ export const MyTripsView: React.FC<MyTripsViewProps> = ({
             const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
               `Stay at ${resv.propertyTitle}`
             )}&dates=${resv.checkInDate.replace(/-/g, '')}T150000Z/${resv.checkOutDate.replace(/-/g, '')}T110000Z&details=${encodeURIComponent(
-              `GM Management Reservation: #${resv.id}\nGuest: ${resv.guestName}\nTotal: $${resv.totalPrice}`
+              `GM Management Reservation: #${resv.id}\nGuest: ${resv.guestName}\n${resv.pricingMode === 'quote' ? 'Quote requested' : `Total: $${resv.totalPrice}`}`
             )}`;
 
             return (
@@ -165,8 +165,8 @@ export const MyTripsView: React.FC<MyTripsViewProps> = ({
                   {/* Actions */}
                   <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
                     <div className="text-xs text-slate-700">
-                      <span className="text-slate-500">Total: </span>
-                      <strong className="text-base text-slate-900">{currencySymbol}{resv.totalPrice}</strong>
+                      <span className="text-slate-500">{resv.pricingMode === 'quote' ? 'Price: ' : 'Total: '}</span>
+                      <strong className="text-base text-slate-900">{resv.pricingMode === 'quote' ? 'Quote requested' : `${currencySymbol}${resv.totalPrice}`}</strong>
                       <span className="text-slate-400"> ({resv.nights} nights • {resv.guestsCount} guests)</span>
                     </div>
 

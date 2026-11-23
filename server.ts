@@ -24,7 +24,7 @@ import {
   getFirestoreInstance
 } from './src/server/firebase-store.js';
 import { uploadImageToGithub } from './src/server/image-upload.js';
-import { calculateStayPricing, isPeriodProperty, getPeriodEndDate } from './src/utils/pricing.js';
+import { calculateStayPricing, isPeriodProperty, getPeriodEndDate, applyQuoteDefault } from './src/utils/pricing.js';
 import os from 'os';
 
 const app = express();
@@ -237,6 +237,16 @@ async function syncWithFirestore(forced = false) {
       cachedDb.folders = cloudFolders;
     }
 
+    // One-time: every property that existed before "Get a quote" was introduced starts on it.
+    // Each property is stamped (quoteDefaultApplied) in the SAME write as its new mode, so it only
+    // ever happens once per property - if a save fails it is simply retried on the next start, and a
+    // mode the owner picks later is never overwritten.
+    const needQuote = applyQuoteDefault(cachedDb.properties as any[]);
+    if (needQuote.length > 0) {
+      console.log(`[Migration] Set ${needQuote.length} existing properties to "Get a quote".`);
+      await Promise.all(needQuote.map((p: any) => persistPropertyToFirestore(p, 'quote_mode_default')));
+    }
+
     writeDb(cachedDb);
     isCloudSynced = true;
     console.log('[Firestore] Initial cloud synchronization finished.');
@@ -385,7 +395,9 @@ app.post('/api/properties', async (req, res) => {
     pricePerNight: Number(req.body.pricePerNight) || Number(req.body.weekdayPrice) || 150,
     weekdayPrice: Number(req.body.weekdayPrice) || Number(req.body.pricePerNight) || 150,
     weekendPrice: Number(req.body.weekendPrice) || Number(req.body.weekdayPrice) || Number(req.body.pricePerNight) || 180,
-    pricingMode: ['monthly', 'yearly'].includes(req.body.pricingMode) ? req.body.pricingMode : 'nightly',
+    // New properties start on "Get a quote" unless a pricing mode is chosen
+    pricingMode: ['nightly', 'monthly', 'yearly', 'quote'].includes(req.body.pricingMode) ? req.body.pricingMode : 'quote',
+    quoteDefaultApplied: true,
     periodPrice: Number(req.body.periodPrice) || 0,
     periodCount: Math.max(1, Math.floor(Number(req.body.periodCount)) || 1),
     specialPrices: sanitizeSpecialPrices(req.body.specialPrices),
@@ -729,7 +741,8 @@ app.post('/api/reservations', async (req, res) => {
     nights, weekdayNights, weekendNights, weekdayRate: weekdayPrice, weekendRate: weekendPrice,
     cleaningFee, serviceFee, totalPrice
   } = pricing;
-  const isPeriodBooking = pricing.mode !== 'nightly';
+  const isPeriodBooking = pricing.mode === 'monthly' || pricing.mode === 'yearly';
+  const isQuoteBooking = pricing.mode === 'quote';
 
   const reservationId = `GM-${Math.floor(100000 + Math.random() * 900000)}`;
 
@@ -756,7 +769,7 @@ app.post('/api/reservations', async (req, res) => {
     guestsCount: Number(guestsCount) || 1,
     adults: Number(adults) || Number(guestsCount) || 1,
     children: Number(children) || 0,
-    pricePerNight: isPeriodBooking ? (pricing.periodPrice ?? 0) : weekdayPrice,
+    pricePerNight: isQuoteBooking ? 0 : isPeriodBooking ? (pricing.periodPrice ?? 0) : weekdayPrice,
     cleaningFee,
     serviceFee,
     totalPrice,
@@ -775,6 +788,9 @@ app.post('/api/reservations', async (req, res) => {
   // Human-readable price breakdown, shared by the staff notification and the WhatsApp message
   const cs = db.settings.currencySymbol;
   const describeBreakdown = (sym: string, withEmoji: boolean) => {
+    if (isQuoteBooking) {
+      return `${withEmoji ? '🌙 ' : ''}Nights: ${nights} (price on request)`;
+    }
     if (isPeriodBooking) {
       return `${withEmoji ? '🗓️ Rental term: ' : ''}${pricing.periodLabel} @ ${sym}${pricing.periodPrice} (${nights} days)`;
     }
@@ -792,7 +808,7 @@ app.post('/api/reservations', async (req, res) => {
     id: `notif-${Date.now()}`,
     type: 'booking_inquiry',
     title: `New Reservation Request: ${guestName}`,
-    message: `${guestName} inquired for ${property.title} (${checkInDate} to ${effectiveCheckOut}, ${nightBreakdownStr}). Phone: ${guestPhone}. Total: ${cs}${totalPrice}`,
+    message: `${guestName} inquired for ${property.title} (${checkInDate} to ${effectiveCheckOut}, ${nightBreakdownStr}). Phone: ${guestPhone}. ${isQuoteBooking ? 'Quote requested' : `Total: ${cs}${totalPrice}`}`,
     targetEmail: db.settings.contactEmail,
     targetPhone: guestPhone,
     date: new Date().toISOString(),
@@ -812,7 +828,13 @@ app.post('/api/reservations', async (req, res) => {
   const targetWhatsApp = (property.whatsappNumber || db.settings.whatsappNumber || '').replace(/[^\d+]/g, '');
   const breakdownMsg = describeBreakdown(db.settings.currencySymbol, true);
 
-  const greetingText = `Hello GM Management, I would like to inquire about booking ${property.title} in ${property.location.city}.\n\n📅 Check-in: ${checkInDate}\n📅 Check-out: ${effectiveCheckOut}\n${breakdownMsg}\n👥 Guests: ${guestsCount}\n💰 Estimated Total: ${db.settings.currencySymbol}${totalPrice}\n👤 Guest Name: ${guestName}\n📞 Phone: ${guestPhone}\n🏷️ Reservation ID: ${reservationId}\n\nPlease confirm availability to finalize the booking.`;
+  const priceLine = isQuoteBooking
+    ? '💰 Please send me a quote for these dates'
+    : `💰 Estimated Total: ${db.settings.currencySymbol}${totalPrice}`;
+  const closingLine = isQuoteBooking
+    ? 'Please confirm availability and send me a quote.'
+    : 'Please confirm availability to finalize the booking.';
+  const greetingText = `Hello GM Management, I would like to ${isQuoteBooking ? 'request a quote for' : 'inquire about booking'} ${property.title} in ${property.location.city}.\n\n📅 Check-in: ${checkInDate}\n📅 Check-out: ${effectiveCheckOut}\n${breakdownMsg}\n👥 Guests: ${guestsCount}\n${priceLine}\n👤 Guest Name: ${guestName}\n📞 Phone: ${guestPhone}\n🏷️ Reservation ID: ${reservationId}\n\n${closingLine}`;
   const whatsappUrl = `https://wa.me/${targetWhatsApp.replace('+', '')}?text=${encodeURIComponent(greetingText)}`;
 
   res.status(201).json({
@@ -894,7 +916,7 @@ app.get('/api/calendar/export/:propertyId.ics', (req, res) => {
       `DTSTART;VALUE=DATE:${formatDate(r.checkInDate)}`,
       `DTEND;VALUE=DATE:${formatDate(r.checkOutDate)}`,
       `SUMMARY:Booked: ${r.guestName} (${r.id})`,
-      `DESCRIPTION:Guest: ${r.guestName}\\nPhone: ${r.guestPhone}\\nEmail: ${r.guestEmail}\\nStatus: ${r.status}\\nTotal: $${r.totalPrice}`,
+      `DESCRIPTION:Guest: ${r.guestName}\\nPhone: ${r.guestPhone}\\nEmail: ${r.guestEmail}\\nStatus: ${r.status}\\nTotal: ${r.pricingMode === 'quote' ? 'Quote requested' : '$' + r.totalPrice}`,
       `STATUS:CONFIRMED`,
       'END:VEVENT'
     );
@@ -947,7 +969,7 @@ app.get('/api/calendar/export-all.ics', (req, res) => {
         `DTSTART;VALUE=DATE:${formatDate(r.checkInDate)}`,
         `DTEND;VALUE=DATE:${formatDate(r.checkOutDate)}`,
         `SUMMARY:[${r.propertyTitle}] ${r.guestName}`,
-        `DESCRIPTION:Guest: ${r.guestName}\\nPhone: ${r.guestPhone}\\nStatus: ${r.status}\\nTotal: $${r.totalPrice}`,
+        `DESCRIPTION:Guest: ${r.guestName}\\nPhone: ${r.guestPhone}\\nStatus: ${r.status}\\nTotal: ${r.pricingMode === 'quote' ? 'Quote requested' : '$' + r.totalPrice}`,
         `STATUS:CONFIRMED`,
         'END:VEVENT'
       );

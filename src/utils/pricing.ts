@@ -11,6 +11,8 @@ import type { SpecialPrice } from '../types';
  *      which override the weekday/weekend rate on those nights.
  *   3. Monthly / yearly: ONE fixed price per rental term, e.g. $2000 / 1 month
  *      or $20000 / 1 year. The check-out date is derived from the start date.
+ *   4. Get a quote: no price is shown. The guest picks dates and requests a quote.
+ *      This is also the mode of any property that has no pricing mode saved yet.
  */
 
 export type PricingProperty = {
@@ -19,7 +21,7 @@ export type PricingProperty = {
   weekendPrice?: number;
   cleaningFee?: number;
   serviceFeePercentage?: number;
-  pricingMode?: 'nightly' | 'monthly' | 'yearly';
+  pricingMode?: 'nightly' | 'monthly' | 'yearly' | 'quote';
   periodPrice?: number;
   periodCount?: number;
   specialPrices?: SpecialPrice[];
@@ -43,12 +45,44 @@ export function formatDateStr(d: Date): string {
 // Monthly / yearly ("period") pricing helpers
 // ---------------------------------------------------------------------------
 
+/** The effective pricing mode. A property with no (or an unknown) mode saved is "Get a quote". */
+export function getPricingMode(
+  p?: Pick<PricingProperty, 'pricingMode'> | null
+): 'nightly' | 'monthly' | 'yearly' | 'quote' {
+  const m = p?.pricingMode;
+  return m === 'nightly' || m === 'monthly' || m === 'yearly' ? m : 'quote';
+}
+
+/**
+ * One-time default: puts every property that hasn't been through it yet on "Get a quote" and
+ * stamps it (quoteDefaultApplied), so a mode the owner picks afterwards is never overwritten.
+ * Mutates the given properties and returns only the ones that changed (the ones to save).
+ */
+export function applyQuoteDefault<T extends { pricingMode?: string; quoteDefaultApplied?: boolean }>(
+  properties: T[]
+): T[] {
+  const changed: T[] = [];
+  for (const p of properties) {
+    if (p && !p.quoteDefaultApplied) {
+      p.pricingMode = 'quote';
+      p.quoteDefaultApplied = true;
+      changed.push(p);
+    }
+  }
+  return changed;
+}
+
+export function isQuoteProperty(p?: Pick<PricingProperty, 'pricingMode'> | null): boolean {
+  return getPricingMode(p) === 'quote';
+}
+
 export function isPeriodProperty(p?: Pick<PricingProperty, 'pricingMode'> | null): boolean {
-  return p?.pricingMode === 'monthly' || p?.pricingMode === 'yearly';
+  const m = getPricingMode(p);
+  return m === 'monthly' || m === 'yearly';
 }
 
 export function getPeriodUnit(p?: Pick<PricingProperty, 'pricingMode'> | null): 'month' | 'year' {
-  return p?.pricingMode === 'yearly' ? 'year' : 'month';
+  return getPricingMode(p) === 'yearly' ? 'year' : 'month';
 }
 
 export function getPeriodCount(p?: Pick<PricingProperty, 'periodCount'> | null): number {
@@ -117,7 +151,7 @@ export function getNightRate(
 }
 
 export interface StayPricingBreakdown {
-  mode: 'nightly' | 'monthly' | 'yearly';
+  mode: 'nightly' | 'monthly' | 'yearly' | 'quote';
   nights: number;
   /** Nights charged at the normal weekday / weekend rate (NOT counting special-price nights). */
   weekdayNights: number;
@@ -163,7 +197,7 @@ export function calculateStayPricing(
       );
     }
     return {
-      mode: property.pricingMode as 'monthly' | 'yearly',
+      mode: getPricingMode(property) as 'monthly' | 'yearly',
       nights,
       weekdayNights: 0,
       weekendNights: 0,
@@ -182,6 +216,37 @@ export function calculateStayPricing(
       cleaningFee: 0,
       serviceFee: 0,
       totalPrice: periodPrice,
+    };
+  }
+
+  // ---- Get a quote: no price, just the dates ------------------------------------
+  if (isQuoteProperty(property)) {
+    let nights = 0;
+    if (checkInDate && checkOutDate) {
+      nights = Math.max(
+        1,
+        Math.round(
+          (new Date(checkOutDate + 'T00:00:00').getTime() - new Date(checkInDate + 'T00:00:00').getTime()) / 86400000
+        )
+      );
+    }
+    return {
+      mode: 'quote',
+      nights,
+      weekdayNights: 0,
+      weekendNights: 0,
+      weekdayRate: weekdayRate,
+      weekendRate: weekendRate,
+      weekdayTotal: 0,
+      weekendTotal: 0,
+      specialNights: 0,
+      specialTotal: 0,
+      specialGroups: [],
+      checkOutDate: checkOutDate || '',
+      basePrice: 0,
+      cleaningFee: 0,
+      serviceFee: 0,
+      totalPrice: 0,
     };
   }
 

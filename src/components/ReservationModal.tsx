@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Property, Reservation } from '../types';
 import { api } from '../services/api';
-import { calculateStayPricing, isPeriodProperty, getPeriodLabel } from '../utils/pricing';
+import { calculateStayPricing, isPeriodProperty, isQuoteProperty, getPeriodLabel } from '../utils/pricing';
 import { Logo } from './Logo';
 
 interface ReservationModalProps {
@@ -56,6 +56,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
   // Calculate pricing with dual weekday (Sun-Thu) and weekend (Fri-Sat) rates
   const pricing = calculateStayPricing(property, checkInDate, checkOutDate);
   const isPeriod = isPeriodProperty(property);
+  const isQuote = isQuoteProperty(property);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,7 +143,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
               </div>
               <Logo size="sm" customLogo={customLogo} showText={false} />
             </div>
-            <h2 className="text-2xl font-bold text-slate-900">Request to Book</h2>
+            <h2 className="text-2xl font-bold text-slate-900">{isQuote ? 'Request a Quote' : 'Request to Book'}</h2>
             <p className="text-sm text-slate-500 mt-1">
               {property.title} • {property.location.city}
             </p>
@@ -162,6 +163,17 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 </div>
               </div>
 
+              {isQuote ? (
+                <div className="mt-3 space-y-1.5 text-xs text-slate-600" data-testid="quote-modal-summary">
+                  <div className="flex justify-between">
+                    <span>{pricing.nights} night{pricing.nights > 1 ? 's' : ''} selected</span>
+                    <span className="font-medium text-slate-800">Price on request</span>
+                  </div>
+                  <p className="pt-2 border-t border-slate-200 text-slate-500">
+                    No payment now. Send your request and we'll reply on WhatsApp with a quote for these dates.
+                  </p>
+                </div>
+              ) : (
               <div className="mt-3 space-y-1.5 text-xs text-slate-600">
                 {isPeriod && (
                   <div className="flex justify-between">
@@ -204,6 +216,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   <span className="text-[#E00B41]">{currencySymbol}{isPeriod ? pricing.totalPrice.toLocaleString() : pricing.totalPrice}</span>
                 </div>
               </div>
+              )}
             </div>
 
             {error && (
@@ -335,11 +348,11 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   id="submit-inquiry-button"
                 >
                   {isSubmitting ? (
-                    <span>Submitting Reservation...</span>
+                    <span>{isQuote ? 'Sending Request...' : 'Submitting Reservation...'}</span>
                   ) : (
                     <>
                       <MessageCircle className="w-5 h-5 fill-white text-transparent" />
-                      <span>Confirm & Connect on WhatsApp</span>
+                      <span>{isQuote ? 'Request Quote on WhatsApp' : 'Confirm & Connect on WhatsApp'}</span>
                     </>
                   )}
                 </button>
@@ -424,7 +437,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
               <Mail className="w-4 h-4 text-[#FF385C] shrink-0 mt-0.5" />
               <div>
                 <span className="font-semibold text-slate-800 block">Automated Email Receipt Sent</span>
-                A copy with check-in instructions and total invoice was dispatched to{' '}
+                {isQuote ? 'A copy of your quote request was sent to' : 'A copy with check-in instructions and total invoice was dispatched to'}{' '}
                 <strong className="text-slate-800">{createdReservation.guestEmail}</strong>.
               </div>
             </div>

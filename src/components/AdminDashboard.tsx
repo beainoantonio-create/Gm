@@ -33,7 +33,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { Property, Reservation, NotificationItem, CompanySettings, BlockedSlot, SpecialPrice, PricingMode } from '../types';
-import { isPeriodProperty, getPeriodPriceSuffix, getPeriodLabel } from '../utils/pricing';
+import { isPeriodProperty, isQuoteProperty, getPricingMode, getPeriodPriceSuffix, getPeriodLabel } from '../utils/pricing';
 import { api } from '../services/api';
 import { Logo } from './Logo';
 
@@ -65,7 +65,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     propertyType: 'Villa',
     location: { city: 'Beirut', country: 'Lebanon', address: '' },
     pricePerNight: 200,
-    pricingMode: 'nightly',
+    pricingMode: 'quote',
     periodCount: 1,
     specialPrices: [],
     cleaningFee: 40,
@@ -400,7 +400,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       pricePerNight: 150,
       weekdayPrice: 150,
       weekendPrice: 220,
-      pricingMode: 'nightly',
+      pricingMode: 'quote',
       periodPrice: undefined,
       periodCount: 1,
       specialPrices: [],
@@ -793,7 +793,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {prop.propertyType}
                         </div>
                         <div className="absolute top-2.5 right-2.5 flex flex-col items-end gap-1">
-                          {isPeriodProperty(prop) ? (
+                          {isQuoteProperty(prop) ? (
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-[10px] font-bold text-white shadow-xs">
+                              Get a quote
+                            </span>
+                          ) : isPeriodProperty(prop) ? (
                             <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-[10px] font-bold text-white shadow-xs">
                               {currencySymbol}{(prop.periodPrice ?? 0).toLocaleString()} <span className="text-emerald-100 font-normal">/ {getPeriodPriceSuffix(prop)}</span>
                             </span>
@@ -1110,13 +1114,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
 
                       {/* Pricing mode selector */}
-                      <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Pricing model">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="radiogroup" aria-label="Pricing model">
                         {([
+                          ['quote', 'Get a quote', 'No price shown'],
                           ['nightly', 'Per night', 'Daily rates'],
                           ['monthly', 'Per month', 'Monthly rental'],
                           ['yearly', 'Per year', 'Yearly rental'],
                         ] as Array<[PricingMode, string, string]>).map(([mode, title, hint]) => {
-                          const active = (propertyForm.pricingMode || 'nightly') === mode;
+                          const active = getPricingMode(propertyForm) === mode;
                           return (
                             <button
                               key={mode}
@@ -1138,7 +1143,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         })}
                       </div>
 
-                      {(propertyForm.pricingMode || 'nightly') === 'nightly' ? (
+                      {getPricingMode(propertyForm) === 'quote' ? (
+                        <div className="p-3 rounded-xl bg-slate-900/80 border border-amber-500/30 space-y-1.5" data-testid="quote-pricing-section">
+                          <span className="font-semibold text-slate-200 text-xs">Guests will see “Get a quote”</span>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            No price is shown. Guests pick their dates and send a request, and you reply with a quote
+                            on WhatsApp. Your per-night, custom-date and monthly / yearly prices are kept, so you can
+                            switch to any of them whenever you're ready to set prices.
+                          </p>
+                        </div>
+                      ) : getPricingMode(propertyForm) === 'nightly' ? (
                         <>
                           <div className="flex items-center justify-between">
                             <span className="font-semibold text-slate-200 text-xs">Nightly rates</span>
@@ -1908,6 +1922,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <p className="text-xs text-slate-400 mt-0.5">
                             {resv.checkInDate} → {resv.checkOutDate} ({resv.periodLabel ? `${resv.periodLabel} rental • ${resv.nights} days` : `${resv.nights} nights`}) • {resv.guestsCount} guests
                           </p>
+                          {resv.pricingMode === 'quote' && (
+                            <div className="flex items-center gap-2 mt-1 text-[11px] font-mono">
+                              <span className="bg-amber-950/60 text-amber-300 px-2 py-0.5 rounded border border-amber-800/40">
+                                Quote requested • {resv.nights} night{resv.nights > 1 ? 's' : ''} • reply with a price
+                              </span>
+                            </div>
+                          )}
                           {resv.periodLabel && (
                             <div className="flex items-center gap-2 mt-1 text-[11px] font-mono">
                               <span className="bg-emerald-950/60 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800/40">
@@ -1949,7 +1970,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             {resv.status}
                           </span>
                           <span className="text-sm font-black text-white">
-                            {currencySymbol}{resv.totalPrice}
+                            {resv.pricingMode === 'quote' ? 'Quote' : `${currencySymbol}${resv.totalPrice}`}
                           </span>
                         </div>
                       </div>
