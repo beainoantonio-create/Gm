@@ -25,7 +25,6 @@ import {
   STORE_IS_AUTHORITATIVE,
   flushPendingWrites
 } from './src/server/store.js';
-import { migrateFirestoreToTurso } from './src/server/migrate-to-turso.js';
 import crypto from 'crypto';
 import { uploadImageToGithub } from './src/server/image-upload.js';
 import { calculateStayPricing, isPeriodProperty, getPeriodEndDate, applyQuoteDefault } from './src/utils/pricing.js';
@@ -1178,6 +1177,7 @@ app.get('/api/admin/migrate-to-turso', async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
   try {
+    const { migrateFirestoreToTurso } = await import('./src/server/migrate-to-turso.js');
     const report = await migrateFirestoreToTurso({ run: req.query.run === '1', force: req.query.force === '1' });
     res.json({ success: true, ...report });
   } catch (err: any) {
