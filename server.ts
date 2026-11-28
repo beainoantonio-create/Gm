@@ -2,7 +2,6 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import ical from 'node-ical';
-import { createServer as createViteServer } from 'vite';
 import {
   fetchPropertiesFromFirestore,
   fetchPropertyPhotosFromFirestore,
@@ -1125,6 +1124,9 @@ app.post('/api/admin/sync-firestore', async (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    // Loaded only here (never on Vercel): Vite needs platform-specific native files that the
+    // serverless install can be missing, and importing it at the top crashed every API call.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
