@@ -99,17 +99,16 @@ export default function App() {
         setLoading(true);
       }
 
-      // Fast critical path: load properties and company settings first
-      const [propsData, settsData] = await Promise.all([
-        api.getProperties(),
-        api.getSettings(),
-      ]);
+      // Fast critical path: show the properties as soon as they arrive. Company settings load in
+      // parallel but no longer hold the page back (the cached copy is already in use meanwhile).
+      api.getSettings().then((settsData) => {
+        if (settsData) setSettings(settsData);
+      }).catch(() => {});
+
+      const propsData = await api.getProperties();
 
       if (Array.isArray(propsData) && propsData.length > 0) {
         setProperties(propsData);
-      }
-      if (settsData) {
-        setSettings(settsData);
       }
       setLoading(false);
 
@@ -299,9 +298,10 @@ export default function App() {
                 </div>
               ) : filteredProperties.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                  {filteredProperties.map((prop) => (
+                  {filteredProperties.map((prop, index) => (
                     <PropertyCard
                       key={prop.id}
+                      priority={index < 4}
                       property={prop}
                       onClick={() => handleSelectProperty(prop)}
                       currencySymbol={currencySymbol}

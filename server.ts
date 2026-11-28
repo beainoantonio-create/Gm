@@ -48,15 +48,24 @@ app.use(async (req, res, next) => {
   try {
     if (IS_VERCEL && !isCloudSynced) {
       await syncWithFirestore(true);
-    } else if (
-      IS_VERCEL && STORE_IS_AUTHORITATIVE && req.method === 'GET' && req.path.startsWith('/api/') &&
-      Date.now() - lastSyncAt > STORE_REFRESH_MS
-    ) {
+    } else if (IS_VERCEL && STORE_IS_AUTHORITATIVE && req.path.startsWith('/api/')) {
       // Several serverless containers can be warm at once, each with its own in-memory copy.
-      // Turso reads are essentially free, so re-read periodically to keep them all in step
-      // (otherwise a booking made on one container could look "available" on another).
-      await flushPendingWrites();
-      await syncWithFirestore(true);
+      // Turso reads are essentially free, so re-read periodically to keep them all in step.
+      const age = Date.now() - lastSyncAt;
+      const needsExactData =
+        /^\/api\/properties\/[^/]+\/availability/.test(req.path) ||
+        req.path.startsWith('/api/reservations') ||
+        (req.method === 'POST' && /block-dates/.test(req.path));
+      if (needsExactData && age > (req.method === 'GET' ? STORE_REFRESH_MS : 2000)) {
+        // Anything that decides whether dates are free must see the latest bookings (prevents
+        // double-booking across containers), so these wait for a fresh read.
+        await flushPendingWrites();
+        await syncWithFirestore(true);
+      } else if (req.method === 'GET' && age > STORE_REFRESH_MS) {
+        // Everything else (property list, settings...) is served instantly from memory and
+        // refreshed in the background, so visitors never wait for the database.
+        flushPendingWrites().then(() => syncWithFirestore(true)).catch(() => {});
+      }
     }
   } catch (err) {
     // Never let a sync failure take down every route - worst case, routes
@@ -406,6 +415,9 @@ function sanitizeSpecialPrices(input: any): any[] {
 // 3. Properties - Direct in-memory fast reads (Zero Firestore reads during page loads)
 app.get('/api/properties', (req, res) => {
   const db = readDb();
+  // Lets Vercel's edge network answer repeat visits instantly (no function start-up, no waiting
+  // on the database). Fresh for 15s; after that the old copy is served while a new one loads.
+  res.set('Cache-Control', 'public, max-age=0, s-maxage=15, stale-while-revalidate=120');
   res.json(db.properties || []);
 });
 

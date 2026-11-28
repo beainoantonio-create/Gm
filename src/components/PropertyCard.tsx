@@ -7,12 +7,15 @@ interface PropertyCardProps {
   property: Property;
   onClick: () => void;
   currencySymbol?: string;
+  /** First cards on screen: load their photo right away instead of lazily. */
+  priority?: boolean;
 }
 
 export const PropertyCard: React.FC<PropertyCardProps> = ({
   property,
   onClick,
   currencySymbol = '$',
+  priority = false,
 }) => {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [isLiked, setIsLiked] = useState(false);
@@ -46,7 +49,8 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
           <img
             src={images[activeImageIndex]}
             alt={property.title}
-            loading="lazy"
+            loading={priority ? 'eager' : 'lazy'}
+            fetchPriority={priority ? 'high' : 'auto'}
             decoding="async"
             className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
             referrerPolicy="no-referrer"

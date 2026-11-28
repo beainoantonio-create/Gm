@@ -21,11 +21,37 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   }
 }
 
+// After the owner saves a change, ask for a fresh copy of the property list (skipping the
+// short-lived edge cache) so the change is visible immediately. Visitors never set this.
+const BUST_KEY = 'gm_bust_cache_at';
+function markListChanged() {
+  try {
+    localStorage.setItem(BUST_KEY, String(Date.now()));
+  } catch {}
+}
+function propertiesUrl(): string {
+  try {
+    const t = Number(localStorage.getItem(BUST_KEY) || 0);
+    if (t && Date.now() - t < 10 * 60 * 1000) return `/api/properties?v=${t}`;
+  } catch {}
+  return '/api/properties';
+}
+
 export const api = {
   // 1. Properties
   async getProperties(): Promise<Property[]> {
+    // A cold server start can take a few seconds, so be patient and try twice before giving up
+    // (the old 2.5s limit made first-time visitors see an empty page).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const data = await this.fetchPropertyList(attempt === 0 ? 12000 : 20000);
+      if (data) return data;
+    }
+    return this.readCachedProperties();
+  },
+
+  async fetchPropertyList(timeoutMs: number): Promise<Property[] | null> {
     try {
-      const res = await fetchWithTimeout('/api/properties', {}, 2500);
+      const res = await fetchWithTimeout(propertiesUrl(), {}, timeoutMs);
       if (res.ok) {
         const data: Property[] = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -38,10 +64,12 @@ export const api = {
         }
       }
     } catch (e) {
-      console.warn('Server fetch /api/properties failed or timed out, falling back...', e);
+      console.warn('Server fetch /api/properties failed or timed out:', e);
     }
+    return null;
+  },
 
-    // Local storage fallback
+  readCachedProperties(): Property[] {
     try {
       const cached = localStorage.getItem(CACHE_KEYS.PROPERTIES);
       if (cached) {
@@ -59,7 +87,7 @@ export const api = {
 
   async getProperty(id: string): Promise<Property> {
     try {
-      const res = await fetchWithTimeout(`/api/properties/${id}`, {}, 3000);
+      const res = await fetchWithTimeout(`/api/properties/${id}`, {}, 10000);
       if (res.ok) return await res.json();
     } catch (e) {
       console.warn(`Server fetch /api/properties/${id} failed:`, e);
@@ -89,6 +117,8 @@ export const api = {
     if (!created) {
       throw new Error('The property could not be saved - the server did not respond. Please try again.');
     }
+
+    markListChanged();
 
     // Update local cache immediately
     try {
@@ -122,6 +152,8 @@ export const api = {
       throw new Error('The changes could not be saved - the server did not respond. Please try again.');
     }
 
+    markListChanged();
+
     // Update local cache immediately
     try {
       const cached = localStorage.getItem(CACHE_KEYS.PROPERTIES);
@@ -141,6 +173,7 @@ export const api = {
     } catch (e) {
       console.warn(`Server deleteProperty ${id} failed:`, e);
     }
+    markListChanged();
 
     return { success: true };
   },
