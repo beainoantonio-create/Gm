@@ -21,13 +21,8 @@ import {
   fetchFoldersFromFirestore,
   persistFolderToFirestore,
   removeFolderFromFirestore,
-  getFirestoreInstance,
-  STORE_PROVIDER,
-  STORE_IS_AUTHORITATIVE,
-  flushPendingWrites
-} from './src/server/store.js';
-import { migrateFirestoreToTurso } from './src/server/migrate-to-turso.js';
-import crypto from 'crypto';
+  getFirestoreInstance
+} from './src/server/firebase-store.js';
 import { uploadImageToGithub } from './src/server/image-upload.js';
 import { calculateStayPricing, isPeriodProperty, getPeriodEndDate, applyQuoteDefault } from './src/utils/pricing.js';
 import os from 'os';
@@ -50,30 +45,11 @@ app.use(async (req, res, next) => {
   try {
     if (IS_VERCEL && !isCloudSynced) {
       await syncWithFirestore(true);
-    } else if (
-      IS_VERCEL && STORE_IS_AUTHORITATIVE && req.method === 'GET' && req.path.startsWith('/api/') &&
-      Date.now() - lastSyncAt > STORE_REFRESH_MS
-    ) {
-      // Several serverless containers can be warm at once, each with its own in-memory copy.
-      // Turso reads are essentially free, so re-read periodically to keep them all in step
-      // (otherwise a booking made on one container could look "available" on another).
-      await flushPendingWrites();
-      await syncWithFirestore(true);
     }
   } catch (err) {
     // Never let a sync failure take down every route - worst case, routes
     // just run against whatever's already in cachedDb (possibly empty).
     console.error('[Sync Middleware] Unexpected error, continuing without sync:', err);
-  }
-  // With Turso, make sure every database write has finished BEFORE the response goes out.
-  // Serverless hosts freeze the function right after responding, which would otherwise
-  // silently drop writes that were started in the background.
-  if (STORE_IS_AUTHORITATIVE && req.method !== 'GET') {
-    const originalEnd = res.end.bind(res) as (...a: any[]) => any;
-    (res as any).end = (...args: any[]) => {
-      flushPendingWrites().then(() => originalEnd(...args), () => originalEnd(...args));
-      return res;
-    };
   }
   next();
 });
@@ -198,23 +174,7 @@ function writeDb(data: DatabaseSchema) {
   }
 }
 
-let syncPromise: Promise<void> | null = null;
-let lastSyncAt = 0;
-let lastSyncFailAt = 0;
-const STORE_REFRESH_MS = 20_000;
-
-// Shares one in-flight sync between concurrent requests, so a request that arrives
-// during a cold start waits for the data instead of seeing an empty site.
-function syncWithFirestore(forced = false): Promise<void> {
-  if (syncPromise) return syncPromise;
-  if (STORE_IS_AUTHORITATIVE && Date.now() - lastSyncFailAt < 3000) return Promise.resolve();
-  syncPromise = doSync(forced).finally(() => {
-    syncPromise = null;
-  });
-  return syncPromise;
-}
-
-async function doSync(forced = false) {
+async function syncWithFirestore(forced = false) {
   if (isSyncing) return;
   isSyncing = true;
   try {
@@ -253,12 +213,12 @@ async function doSync(forced = false) {
       cachedDb.properties = [];
     }
 
-    if (cloudBlocks && (STORE_IS_AUTHORITATIVE || cloudBlocks.length > 0)) {
+    if (cloudBlocks && cloudBlocks.length > 0) {
       console.log(`[Firestore] Synchronized ${cloudBlocks.length} blocked slots from Cloud Firestore.`);
       cachedDb.blockedSlots = cloudBlocks;
     }
 
-    if (cloudReservations && (STORE_IS_AUTHORITATIVE || cloudReservations.length > 0)) {
+    if (cloudReservations && cloudReservations.length > 0) {
       console.log(`[Firestore] Synchronized ${cloudReservations.length} reservations from Cloud Firestore.`);
       cachedDb.reservations = cloudReservations;
     }
@@ -268,11 +228,11 @@ async function doSync(forced = false) {
       cachedDb.settings = { ...cachedDb.settings, ...cloudSettings };
     }
 
-    if (cloudNotifs && (STORE_IS_AUTHORITATIVE || cloudNotifs.length > 0)) {
+    if (cloudNotifs && cloudNotifs.length > 0) {
       cachedDb.notifications = cloudNotifs;
     }
 
-    if (cloudFolders && (STORE_IS_AUTHORITATIVE || cloudFolders.length > 0)) {
+    if (cloudFolders && cloudFolders.length > 0) {
       console.log(`[Firestore] Synchronized ${cloudFolders.length} folders from Cloud Firestore.`);
       cachedDb.folders = cloudFolders;
     }
@@ -289,12 +249,9 @@ async function doSync(forced = false) {
 
     writeDb(cachedDb);
     isCloudSynced = true;
-    lastSyncAt = Date.now();
     console.log('[Firestore] Initial cloud synchronization finished.');
   } catch (err) {
-    // Keep whatever data is already in memory - a failed read must never wipe the site.
-    lastSyncFailAt = Date.now();
-    console.error('[Firestore] Synchronization error (keeping existing data in memory):', err);
+    console.error('[Firestore] Firestore synchronization error on bootstrap:', err);
   } finally {
     isSyncing = false;
   }
@@ -304,7 +261,7 @@ async function doSync(forced = false) {
 
 // 1. Health & Sync Status
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', provider: STORE_PROVIDER, isCloudSynced, timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', isCloudSynced, timestamp: new Date().toISOString() });
 });
 
 // Image Upload API (saves images as clean static URLs to keep Firestore & db.json lightweight)
@@ -1161,39 +1118,6 @@ app.post('/api/admin/sync-firestore', async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Sync failed' });
-  }
-});
-
-// 10. One-time Firebase -> Turso copy. Protected by the MIGRATION_KEY environment variable.
-//   GET /api/admin/migrate-to-turso?key=KEY            -> dry run (counts only, changes nothing)
-//   GET /api/admin/migrate-to-turso?key=KEY&run=1      -> copies the data
-//   GET /api/admin/migrate-to-turso?key=KEY&run=1&force=1 -> copies even if Turso already has data
-app.get('/api/admin/migrate-to-turso', async (req, res) => {
-  const expected = process.env.MIGRATION_KEY || '';
-  const given = String(req.query.key || '');
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  const ok = expected.length >= 8 && a.length === b.length && crypto.timingSafeEqual(a, b);
-  if (!ok) {
-    // Same answer whether the feature is off or the key is wrong.
-    return res.status(404).json({ error: 'Not found' });
-  }
-  try {
-    const report = await migrateFirestoreToTurso({ run: req.query.run === '1', force: req.query.force === '1' });
-    res.json({ success: true, ...report });
-  } catch (err: any) {
-    const text = String(err?.message || err);
-    const quota = /resource-exhausted|quota/i.test(text) || err?.code === 'resource-exhausted';
-    console.error('[Migration] Failed:', err);
-    res.status(500).json({
-      success: false,
-      error: text,
-      hint: quota
-        ? 'Firebase free daily limit is used up. Try again after it resets (around 10 AM Beirut time).'
-        : /offline|unavailable|timed out/i.test(text)
-          ? 'Could not reach Firebase right now (it may be blocked by its daily limit). Nothing was changed. Try again later.'
-          : 'Nothing was changed in Firebase. Check TURSO_DATABASE_URL / TURSO_AUTH_TOKEN and try again.'
-    });
   }
 });
 
